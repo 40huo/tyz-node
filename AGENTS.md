@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI coding agents when working with code in this repository.
 
 ## Project Overview
 
@@ -61,15 +61,15 @@ GOST API (hot-reload configuration)
 **TLS Generator** (`src/services/gost/tls.ts`):
 - Generates TLS certificate configuration from optional `tls` field
 
-**Supabase Service** (`src/services/supabase-service.ts`):
+**Supabase Service** (`src/services/supabase.ts`):
 - Manages Realtime subscription to config table
 - Triggers config conversion and GOST update on database changes
 - Saves GOST observer statistics back to database
 
 **GOST Client** (`src/services/gost/client.ts`):
 - HTTP client for GOST API (v3.2.6)
-- `updateConfig()`: POST /config + POST /config/reload for hot-reload
-- `getConfig()`, `getMetrics()`: Fetch current state
+- `updateConfig()`: POST /api/config/reload with the new config as body, for hot-reload
+- `getConfig()`: Fetch current config state
 
 ## Critical Implementation Details
 
@@ -139,11 +139,7 @@ Parse range from `relay_nodes.ports` (e.g., "10000-20000")
 
 ## Testing Strategy
 
-**Config conversion test**: Pure logic test without GOST binary
-- Uses real database example from `examples/real-database-example.json`
-- Validates field mappings and limiter parsing
-
-**Full integration test** (`bun run test`):
+**Full integration test** (`bun run test`, runs `scripts/test-full-integration.ts`):
 - Starts actual GOST v3.2.6 process
 - Applies generated config via API
 - Verifies services, chains, limiters are running

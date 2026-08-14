@@ -1,27 +1,23 @@
-# Build stage
-FROM oven/bun:alpine AS builder
+# Bun runs TypeScript directly, no build stage needed
+FROM oven/bun:1-alpine
 
 WORKDIR /app
 
-# Copy dependency files
+ENV NODE_ENV=production
+
+# Copy dependency files first for layer caching
 COPY package.json bun.lock ./
 
-# Install dependencies with frozen lockfile for reproducible builds
-RUN bun install --frozen-lockfile
+# Install production dependencies only (skips typescript/biome/supabase CLI)
+RUN bun install --frozen-lockfile --production
 
-# Copy source code
-COPY . .
+# Copy application source
+COPY src ./src
 
-# Build binary with bytecode optimization
-RUN bun build --compile --bytecode --minify src/index.ts --outfile=dist/server
+# Run as the non-root user provided by the base image
+USER bun
 
-# Production stage
-FROM oven/bun:alpine
+EXPOSE 18090
 
-WORKDIR /app
-
-# Copy binary from builder
-COPY --from=builder /app/dist/server ./server
-
-# Start application
-CMD ["./server"]
+# Exec form so SIGTERM reaches bun directly
+CMD ["bun", "run", "src/index.ts"]
