@@ -3,6 +3,10 @@
     {
       "name": "service-1",
       "addr": ":8080",
+      "limiter": "limiter-service-1",
+      "climiter": "climiter-service-1",
+      "rlimiter": "rlimiter-service-1",
+      "observer": "stats-observer",
       "handler": {
         "type": "tcp",
         "chain": "chain-1"
@@ -18,17 +22,14 @@
           }
         ]
       },
-      "limiter": "limiter-service-1",
-      "rlimiter": "rlimiter-service-1",
-      "climiter": "climiter-service-1",
       "metadata": {
         "enableStats": "true"
-      },
-      "observer": "stats-observer"
+      }
     },
     {
       "name": "service-2",
       "addr": ":8443",
+      "observer": "stats-observer",
       "handler": {
         "type": "auto",
         "chain": "chain-2"
@@ -38,8 +39,7 @@
       },
       "metadata": {
         "enableStats": "true"
-      },
-      "observer": "stats-observer"
+      }
     }
   ],
   "chains": [
@@ -77,11 +77,6 @@
               },
               "dialer": {
                 "type": "tls"
-              },
-              "tls": {
-                "validity": "8760h",
-                "commonName": "relay.example.com",
-                "organization": "ExampleOrg"
               }
             }
           ]
@@ -112,11 +107,6 @@
               },
               "dialer": {
                 "type": "ws"
-              },
-              "tls": {
-                "validity": "8760h",
-                "commonName": "relay.example.com",
-                "organization": "ExampleOrg"
               }
             }
           ]
@@ -138,16 +128,6 @@
       "limits": ["192.168.1.50 524288 1048576"]
     }
   ],
-  "rlimiters": [
-    {
-      "name": "rlimiter-service-1",
-      "limits": ["$ 100"]
-    },
-    {
-      "name": "rlimiter-ip-1-0",
-      "limits": ["192.168.1.50 10"]
-    }
-  ],
   "climiters": [
     {
       "name": "climiter-service-1",
@@ -156,6 +136,16 @@
     {
       "name": "climiter-ip-1-0",
       "limits": ["192.168.1.50 50"]
+    }
+  ],
+  "rlimiters": [
+    {
+      "name": "rlimiter-service-1",
+      "limits": ["$ 100"]
+    },
+    {
+      "name": "rlimiter-ip-1-0",
+      "limits": ["192.168.1.50 10"]
     }
   ]
 }

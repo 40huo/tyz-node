@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"sync"
 
+	corelogger "github.com/go-gost/core/logger"
 	coregistry "github.com/go-gost/core/registry"
 	"github.com/go-gost/x/config"
 	chain_parser "github.com/go-gost/x/config/parsing/chain"
@@ -152,7 +153,7 @@ func (a *Applier) reconcileChains(last, desired []*config.ChainConfig) error {
 		if exists && !changed {
 			continue
 		}
-		ch, err := chain_parser.ParseChain(cfg, nil)
+		ch, err := chain_parser.ParseChain(cfg, corelogger.Default())
 		if err != nil {
 			return fmt.Errorf("parse chains %q: %w", cfg.Name, err)
 		}

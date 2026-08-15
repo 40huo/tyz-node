@@ -104,16 +104,16 @@ embedded GOST observer (statsobs) ──► stats buffer ──► POST /api/age
 
 Handler/listener types depend on node position (IN/CHAIN/OUT from `chain_type`) and hop count:
 
-- **Entry nodes** (chain_type='in'): 1 hop → simple forwarding (`handler: tcp` + forwarder); 2 hops → `handler: tcp` + chain; 3+ hops → `handler: auto` + chain. Listen port = rule's `listen_port`.
-- **Exit nodes** (chain_type='out'): always `handler: relay` with transport-based listener; port from chain's `port` (0 = auto-allocate `start + (chain_id + node_id) % port_range` from `relay_nodes.ports`).
+- **Entry nodes** (chain_type='in'): one service per rule listening on the rule's `listen_port`; 1 hop → simple forwarding (`handler: tcp` + forwarder); 2 hops → `handler: tcp` + chain; 3+ hops → `handler: auto` + chain. All rules of a tunnel reference the same chain.
+- **Exit/relay nodes**: exactly **one** `handler: relay` service per tunnel (`service-t{tunnelId}`), regardless of rule count — the relay protocol carries each connection's destination in-band, so N entry rules funnel through one exit port (which may even numerically equal an entry listen port; they live on different machines). Port = the chain row's `port` (0 = auto-allocate `start + (chain_id + node_id) % port_range` from `relay_nodes.ports`). Rule limiters apply at the entry services only.
 
-Chains are only generated at entry nodes. Multi-hop chains sort by `index` and may carry a per-hop `selector.strategy`.
+Chains are only generated at entry nodes. **Two-hop tunnels: `tunnels.ingress_display_address` is the address the entry dials for the relay handoff** (i.e. the exit's relay listener — the "ingress" naming is historical). Multi-hop chains sort by `index` and may carry a per-hop `selector.strategy`.
 
 Transport mapping (`internal/builder/mapper.go`): `raw→tcp, tls→tls, wss→ws, mwss→mws`, etc. Limiters (`internal/builder/limiter.go`): `limiters` (traffic), `rlimiters` (request rate), `climiters` (connections) from the rule's `limit` JSON; supports service-level and per-IP limits.
 
 ### Naming conventions
 
-All GOST objects are named deterministically (`service-{ruleId}`, `chain-{tunnelId}`, `node-{nodeId}-t{tunnelId}`, `hop-{tunnelId}-{index}`) — required for the registry diff-apply to recognize stale objects across config versions.
+All GOST objects are named deterministically (`service-{ruleId}` at entries, `service-t{tunnelId}` at exits, `chain-{tunnelId}`, `node-{nodeId}-t{tunnelId}`, `hop-{tunnelId}-{index}`) — required for the registry diff-apply to recognize stale objects across config versions.
 
 ### Database schema quirks
 
@@ -146,9 +146,11 @@ Biome (root `biome.json`) covers the TS workspaces: double quotes, 120 cols, org
 ## Testing
 
 `bun run test:agent` (i.e. `go test ./...` in apps/agent):
-- builder golden test: builds `examples/real-database-example.json` → `aggregated_data` and compares against `internal/builder/testdata/golden-gost-config.json` (the TS builder's output, kept as the baseline; two documented deltas are normalized — the inert `nodes[].tls` auto-cert fields and `selector.failTimeout` seconds-vs-nanoseconds).
+- builder golden tests: builds `examples/real-database-example.json` → `aggregated_data` and compares against `internal/builder/testdata/golden-gost-config.json` (the TS builder's output, kept as the baseline; two documented deltas are normalized — the inert `nodes[].tls` auto-cert fields and `selector.failTimeout` seconds-vs-nanoseconds); the two-node relay scenario (`testdata/two-node-example.json`, entry + exit perspectives) pins the shared-exit-port shape. Regenerate with `go test ./internal/builder -update` after intentional changes.
 - WsChannel state machine: 3 failures → poll fallback → probe reconnect → recovery → `config_changed` delivery (own local WS server, no control plane needed).
-- apply tests: registry lifecycle (create / idempotent re-apply / update / delete / limiter hot-swap).
+- apply tests: registry lifecycle (create / idempotent re-apply / update / delete / limiter hot-swap / two-node entry+exit swap).
+
+Live two-agent e2e (needs `wrangler dev` + seed): `apps/agent/scripts/e2e-local.sh` — re-applies the seed (single-hop tunnel-1 + two-node relay tunnel-2 with two rules sharing the exit's :16900), builds the agent, starts two local HTTP targets and two agent processes, and asserts distinguishable responses through both entry ports.
 
 Server-side e2e (needs `wrangler dev` running): `bun run scripts/test-ws-push.ts` (inside apps/server) — bad token rejected, hello, ping/pong, admin write broadcasts `config_changed`. Uses seed token `dev-token-1` and admin/admin123.
 

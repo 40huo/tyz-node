@@ -55,9 +55,12 @@ CONTROL_PLANE_URL=http://localhost:8787 NODE_TOKEN=dev-token-1 bun run dev:agent
 
 # 4. agent 测试（golden 配置生成 / WS 状态机 / 应用生命周期）
 bun run test:agent
+
+# 5. 双节点 e2e（可选）：单节点直转 + 双节点中继（多规则共享出口端口）
+apps/agent/scripts/e2e-local.sh
 ```
 
-样例数据中节点 1 的 token 为 `dev-token-1`（对应 `.dev.vars` 中 `TOKEN_SALT=dev-token-salt`）。生产节点请在管理面板创建节点，Token 仅在创建/轮换时显示一次。
+样例数据中节点 1/2 的 token 为 `dev-token-1`/`dev-token-2`（对应 `.dev.vars` 中 `TOKEN_SALT=dev-token-salt`）；拓扑含单节点直转（tunnel-1）与双节点中继（tunnel-2：两条入口规则共享出口 :16900 的 relay 监听）。生产节点请在管理面板创建节点，Token 仅在创建/轮换时显示一次。
 
 完整数据面验证（可选）：向规则监听端口发流量（如 `curl http://localhost:8080`），流量经内嵌 GOST 转发到目标，统计会回流到 D1（管理面板节点统计或 `GET /api/admin/nodes/1/stats` 可见）。
 

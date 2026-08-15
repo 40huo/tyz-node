@@ -1,6 +1,7 @@
 package gostapply
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"testing"
@@ -89,6 +90,58 @@ func TestApplyLifecycle(t *testing.T) {
 	if n := len(registry.ServiceRegistry().GetAll()); n != 0 {
 		t.Fatalf("expected 0 services after empty apply, got %d", n)
 	}
+}
+
+// TestApplyTwoNodeRelay exercises the chain path (ParseChain requires a
+// non-nil logger) plus the entry/exit shapes from the two-node fixture.
+func TestApplyTwoNodeRelay(t *testing.T) {
+	a := testApplier(t)
+
+	raw, err := os.ReadFile("../builder/testdata/two-node-example.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var fixture struct {
+		Entry *model.NodeConfigData `json:"entry"`
+		Exit  *model.NodeConfigData `json:"exit"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+
+	applyRaw := func(data *model.NodeConfigData) {
+		t.Helper()
+		cfg, err := builder.Build(data)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		if err := a.Apply(cfg); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+	}
+
+	applyRaw(fixture.Exit)
+	if !registry.ServiceRegistry().IsRegistered("service-t2") || registry.ServiceRegistry().IsRegistered("service-2") {
+		t.Fatal("exit should register only the shared relay service service-t2")
+	}
+
+	applyRaw(fixture.Entry)
+	if !registry.ChainRegistry().IsRegistered("chain-2") {
+		t.Fatal("entry chain chain-2 not registered")
+	}
+	for _, name := range []string{"service-2", "service-3"} {
+		if !registry.ServiceRegistry().IsRegistered(name) {
+			t.Fatalf("%s not registered after entry apply", name)
+		}
+	}
+
+	// Re-applying the exit config must tear the entry objects back down.
+	applyRaw(fixture.Exit)
+	if registry.ServiceRegistry().IsRegistered("service-2") || !registry.ServiceRegistry().IsRegistered("service-t2") {
+		t.Fatal("re-apply of exit config should remove entry services")
+	}
+	registry.ChainRegistry().Unregister("chain-2")
+	registry.ServiceRegistry().Unregister("service-t2")
 }
 
 // TestApplyLimiterHotSwap checks limiters are created and removed with the

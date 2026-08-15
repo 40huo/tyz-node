@@ -68,7 +68,6 @@ func Build(data *model.NodeConfigData) (*config.Config, error) {
 	if err := b.buildChains(); err != nil {
 		return nil, err
 	}
-	b.buildLimiters()
 	return &b.config, nil
 }
 
@@ -148,9 +147,33 @@ func (b *cfgBuilder) chainAddr(chain *model.Chain, tunnel *model.Tunnel) (string
 // ---- services ----
 
 func (b *cfgBuilder) buildServices() error {
+	relayBuilt := map[int]bool{}
+
 	for i := range b.data.Rules {
 		rule := &b.data.Rules[i]
-		svc, err := b.buildService(rule)
+
+		var svc *config.ServiceConfig
+		var err error
+
+		if rule.TunnelID == nil {
+			svc, err = b.forwardService(rule)
+		} else {
+			tunnel := b.findTunnel(*rule.TunnelID)
+			if tunnel == nil {
+				return fmt.Errorf("tunnel %d not found for rule %d", *rule.TunnelID, rule.ID)
+			}
+			if b.inChainForNode(tunnel) != nil {
+				svc, err = b.entryService(rule, tunnel)
+			} else if relayBuilt[tunnel.ID] {
+				// One relay listener serves every rule of the tunnel: the
+				// relay protocol carries each connection's destination
+				// in-band, so entry rules share a single exit port.
+				continue
+			} else {
+				relayBuilt[tunnel.ID] = true
+				svc, err = b.relayService(tunnel)
+			}
+		}
 		if err != nil {
 			return err
 		}
@@ -163,64 +186,65 @@ func (b *cfgBuilder) buildServices() error {
 	return nil
 }
 
-func (b *cfgBuilder) buildService(rule *model.RelayRule) (*config.ServiceConfig, error) {
-	if rule.TunnelID == nil {
-		// No tunnel: simple port forwarding.
-		svc := b.baseService(rule)
+// forwardService is the tunnel-less shape: plain TCP port forwarding.
+func (b *cfgBuilder) forwardService(rule *model.RelayRule) (*config.ServiceConfig, error) {
+	svc := b.baseService(rule)
+	svc.Handler = &config.HandlerConfig{Type: "tcp"}
+	svc.Listener = &config.ListenerConfig{Type: "tcp"}
+	svc.Forwarder = b.forwarder(rule, true)
+	b.attachLimiters(svc, rule)
+	return svc, nil
+}
+
+// entryService listens on the rule's port. One service per rule; all rules of
+// a tunnel reference the same chain (chains are deduplicated per tunnel).
+func (b *cfgBuilder) entryService(rule *model.RelayRule, tunnel *model.Tunnel) (*config.ServiceConfig, error) {
+	svc := b.baseService(rule)
+	chains := b.chainsForTunnel(tunnel.ID)
+	switch len(chains) {
+	case 1: // single-hop forwarding
 		svc.Handler = &config.HandlerConfig{Type: "tcp"}
 		svc.Listener = &config.ListenerConfig{Type: "tcp"}
 		svc.Forwarder = b.forwarder(rule, true)
-		b.attachLimiters(svc, rule)
-		return svc, nil
+	case 2: // two-hop relay
+		svc.Handler = &config.HandlerConfig{Type: "tcp", Chain: chainName(tunnel.ID)}
+		svc.Listener = &config.ListenerConfig{Type: "tcp"}
+		svc.Forwarder = b.forwarder(rule, false)
+	default: // multi-hop relay (3+ nodes)
+		svc.Handler = &config.HandlerConfig{Type: "auto", Chain: chainName(tunnel.ID)}
+		svc.Listener = &config.ListenerConfig{Type: "tcp"}
 	}
-
-	tunnel := b.findTunnel(*rule.TunnelID)
-	if tunnel == nil {
-		return nil, fmt.Errorf("tunnel %d not found for rule %d", *rule.TunnelID, rule.ID)
-	}
-
-	var svc *config.ServiceConfig
-	inChain := b.inChainForNode(tunnel)
-
-	if inChain == nil {
-		// CHAIN or OUT node: listen on the chain's port.
-		nodeChain := b.chainForNodeInTunnel(tunnel)
-		if nodeChain != nil && nodeChain.Port != 0 {
-			svc = &config.ServiceConfig{
-				Name: serviceName(rule.ID),
-				Addr: fmt.Sprintf(":%d", nodeChain.Port),
-			}
-		} else {
-			svc = b.baseService(rule)
-		}
-		// Exit node service (relay handler).
-		svc.Handler = &config.HandlerConfig{Type: "relay"}
-		transport := model.TransportRaw
-		if out := b.outChain(tunnel); out != nil {
-			transport = out.Transport
-		}
-		svc.Listener = &config.ListenerConfig{Type: dialerType(transport)}
-	} else {
-		// Entry node: listen on the rule's port.
-		svc = b.baseService(rule)
-		chains := b.chainsForTunnel(tunnel.ID)
-		switch len(chains) {
-		case 1: // single-hop forwarding
-			svc.Handler = &config.HandlerConfig{Type: "tcp"}
-			svc.Listener = &config.ListenerConfig{Type: "tcp"}
-			svc.Forwarder = b.forwarder(rule, true)
-		case 2: // two-hop relay
-			svc.Handler = &config.HandlerConfig{Type: "tcp", Chain: chainName(tunnel.ID)}
-			svc.Listener = &config.ListenerConfig{Type: "tcp"}
-			svc.Forwarder = b.forwarder(rule, false)
-		default: // multi-hop relay (3+ nodes)
-			svc.Handler = &config.HandlerConfig{Type: "auto", Chain: chainName(tunnel.ID)}
-			svc.Listener = &config.ListenerConfig{Type: "tcp"}
-		}
-	}
-
 	b.attachLimiters(svc, rule)
 	return svc, nil
+}
+
+// relayService is the exit/relay-node shape: ONE relay listener per tunnel
+// (name service-t{tunnelId}), independent of the entry-side rule count. Its
+// port may even numerically equal an entry listen port — they live on
+// different machines. Port 0 auto-allocates from this node's port range.
+// Rule limiters apply at the entry services, not here.
+func (b *cfgBuilder) relayService(tunnel *model.Tunnel) (*config.ServiceConfig, error) {
+	nodeChain := b.chainForNodeInTunnel(tunnel)
+	if nodeChain == nil {
+		return nil, fmt.Errorf("node %d has no chain in tunnel %d", b.data.Node.ID, tunnel.ID)
+	}
+	port := nodeChain.Port
+	if port == 0 {
+		var err error
+		if port, err = allocatePortForChain(b.data.Node.Ports, nodeChain.ID, b.data.Node.ID); err != nil {
+			return nil, err
+		}
+	}
+	transport := model.TransportRaw
+	if out := b.outChain(tunnel); out != nil {
+		transport = out.Transport
+	}
+	return &config.ServiceConfig{
+		Name:     fmt.Sprintf("service-t%d", tunnel.ID),
+		Addr:     fmt.Sprintf(":%d", port),
+		Handler:  &config.HandlerConfig{Type: "relay"},
+		Listener: &config.ListenerConfig{Type: dialerType(transport)},
+	}, nil
 }
 
 func (b *cfgBuilder) baseService(rule *model.RelayRule) *config.ServiceConfig {
@@ -262,6 +286,11 @@ func (b *cfgBuilder) attachLimiters(svc *config.ServiceConfig, rule *model.Relay
 	if len(set.climiters) > 0 {
 		svc.CLimiter = set.climiters[0].Name
 	}
+	// Emit the limiter objects alongside the service that references them —
+	// exit relay services carry no limiters, so their rules contribute none.
+	b.config.Limiters = append(b.config.Limiters, set.limiters...)
+	b.config.RLimiters = append(b.config.RLimiters, set.rlimiters...)
+	b.config.CLimiters = append(b.config.CLimiters, set.climiters...)
 }
 
 // ---- chains (entry nodes only) ----
@@ -354,16 +383,4 @@ func (b *cfgBuilder) nodeConfig(chain *model.Chain, tunnel *model.Tunnel, dialer
 		Connector: &config.ConnectorConfig{Type: connector},
 		Dialer:    &config.DialerConfig{Type: dialerType(dialerTransport)},
 	}, nil
-}
-
-// ---- limiters ----
-
-func (b *cfgBuilder) buildLimiters() {
-	for i := range b.data.Rules {
-		rule := &b.data.Rules[i]
-		set := parseLimiters(rule.Limit, rule.ID)
-		b.config.Limiters = append(b.config.Limiters, set.limiters...)
-		b.config.RLimiters = append(b.config.RLimiters, set.rlimiters...)
-		b.config.CLimiters = append(b.config.CLimiters, set.climiters...)
-	}
 }
