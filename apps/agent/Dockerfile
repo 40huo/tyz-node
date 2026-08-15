@@ -5,10 +5,13 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Copy workspace manifests first for layer caching
+# Copy ALL workspace manifests: bun resolves the `apps/*`/`packages/*` globs at
+# install time, so a missing package.json makes the frozen lockfile mismatch.
 COPY package.json bun.lock ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/agent/package.json apps/agent/
+COPY apps/server/package.json apps/server/
+COPY apps/web/package.json apps/web/
 
 # Install production dependencies only (skips typescript/biome dev tooling)
 RUN bun install --frozen-lockfile --production
