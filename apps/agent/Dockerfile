@@ -24,14 +24,16 @@ COPY apps/agent apps/agent
 
 RUN cd apps/agent && bun build --compile --bytecode --minify --sourcemap src/index.ts --outfile=dist/server
 
-FROM alpine:3.22
+# Same image as the builder: the compiled executable inherits the linkage of
+# the bun that built it (musl here), so the runtime matches it exactly. A bare
+# alpine would also work in theory, but emulation-built (QEMU/arm64) musl
+# binaries have had quirks — see oven-sh/bun#19536 — so keep build == runtime.
+FROM oven/bun:1-alpine
 
-# musl-linked binary built on the alpine builder above; no other runtime needed.
-RUN adduser -D -u 10001 agent
 WORKDIR /app
-COPY --from=build --chown=agent:agent /app/apps/agent/dist/server ./server
+COPY --from=build --chown=bun:bun /app/apps/agent/dist/server ./server
 
-USER agent
+USER bun
 EXPOSE 18090
 
 # Exec form so SIGTERM reaches the agent directly
