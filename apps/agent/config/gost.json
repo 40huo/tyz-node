@@ -1,0 +1,17 @@
+{
+  "services": [],
+  "api": {
+    "addr": "localhost:18080",
+    "pathPrefix": "/api"
+  },
+  "observers": [
+    {
+      "name": "stats-observer",
+      "plugin": {
+        "type": "http",
+        "addr": "http://localhost:18090/gost/observer",
+        "timeout": "30s"
+      }
+    }
+  ]
+}

@@ -6,10 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": [
-      "**",
-      "!!**/dist"
-    ]
+    "includes": ["**", "!!**/dist", "!!examples", "!!**/.wrangler"]
   },
   "formatter": {
     "enabled": true,
@@ -18,13 +15,31 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true
+      "recommended": true,
+      "suspicious": {
+        "noExplicitAny": "warn"
+      },
+      "style": {
+        "noNonNullAssertion": "warn"
+      },
+      "complexity": {
+        "noStaticOnlyClass": "warn"
+      },
+      "a11y": {
+        "useValidAnchor": "warn",
+        "noStaticElementInteractions": "warn"
+      }
     }
   },
   "javascript": {
     "formatter": {
       "quoteStyle": "double",
       "lineWidth": 120
+    }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
     }
   },
   "assist": {

@@ -6,10 +6,14 @@ package-lock.json
 .env
 .env.local
 .env.*.local
+.dev.vars
 
 # Build output
 dist/
 *.log
+
+# Wrangler (Cloudflare local state)
+.wrangler/
 
 # IDE
 .vscode/
@@ -22,8 +26,12 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Claude
+# Agent tools
 .claude/
+.zcode/
 
 # Docker
 *.pid
+
+# Local artifacts
+generated-gost-config.json

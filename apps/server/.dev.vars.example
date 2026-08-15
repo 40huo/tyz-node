@@ -1,0 +1,6 @@
+# Copy to .dev.vars for local `wrangler dev` (never commit the real .dev.vars).
+ADMIN_USERNAME=admin
+# bun run scripts/hash-password.ts <TOKEN_SALT> <password>
+ADMIN_PASSWORD_SHA256=<sha256 hex>
+SESSION_SECRET=<random string>
+TOKEN_SALT=<random string>

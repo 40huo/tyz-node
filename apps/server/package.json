@@ -1,0 +1,23 @@
+{
+  "name": "@tyz/server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate": "wrangler d1 migrations apply DB --remote",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tyz/shared": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.6.14",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250110.0",
+    "drizzle-kit": "^0.31.10",
+    "wrangler": "^4.0.0"
+  }
+}

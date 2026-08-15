@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     network_mode: host
     volumes:
-      - ./gost.json:/etc/gost/gost.json
+      - ./apps/agent/config/gost.json:/etc/gost/gost.json
 
   app:
     image: ghcr.io/laoshan-tech/tyz-node:latest

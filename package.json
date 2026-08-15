@@ -1,23 +1,22 @@
 {
-  "name": "tyz-node",
+  "name": "tyz",
+  "private": true,
   "version": "1.0.0",
-  "description": "GOST tunnel node wrapper service",
-  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "bun run --hot src/index.ts",
-    "start": "bun run src/index.ts",
-    "build": "bun build --compile --bytecode --minify --sourcemap src/index.ts --outfile=dist/server",
-    "type-check": "tsc --noEmit",
-    "test": "bun run scripts/test-full-integration.ts"
-  },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.47.10",
-    "hono": "^4.6.14"
+    "dev:agent": "bun run --filter @tyz/agent dev",
+    "dev:server": "bun run --filter @tyz/server dev",
+    "dev:web": "bun run --filter @tyz/web dev",
+    "build:web": "bun run --filter @tyz/web build",
+    "type-check": "bun run --filter '*' type-check",
+    "lint": "biome check .",
+    "format": "biome format --write ."
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.12",
-    "@types/bun": "^1.1.14",
-    "supabase": "^2.72.9",
     "typescript": "^5.7.2"
   }
 }
