@@ -1,40 +1,38 @@
-# Build context: repository root (monorepo with bun workspaces)
+# Build context: repository root
 #
-# Multi-stage: the builder installs deps and compiles the agent into a single
-# self-contained executable (bun runtime embedded); the runtime image carries
-# no node_modules at all (~100MB total instead of ~500MB with every workspace's
-# production dependencies).
+# Multi-stage cross-compile: the builder runs natively on the build host
+# (BUILDPLATFORM) and emits a static binary for TARGETARCH; the runtime is
+# plain alpine with CA certs. The agent embeds the GOST runtime in-process,
+# so a single binary replaces the previous agent + gogost/gost pair.
 
-FROM oven/bun:1-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 
-WORKDIR /app
+WORKDIR /src
+ARG TARGETARCH
 
-# Copy ALL workspace manifests: bun resolves the `apps/*`/`packages/*` globs at
-# install time, so a missing package.json makes the frozen lockfile mismatch.
-COPY package.json bun.lock ./
-COPY packages/shared/package.json packages/shared/
-COPY apps/agent/package.json apps/agent/
-COPY apps/server/package.json apps/server/
-COPY apps/web/package.json apps/web/
+# Module cache layer: re-built only when go.mod/go.sum change.
+COPY apps/agent/go.mod apps/agent/go.sum ./apps/agent/
+RUN cd apps/agent && go mod download
 
-RUN bun install --frozen-lockfile
+COPY apps/agent ./apps/agent
+RUN mkdir -p /out && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
+    go build -C apps/agent -trimpath -ldflags "-s -w" -o /out/tyz-agent .
 
-COPY packages/shared packages/shared
-COPY apps/agent apps/agent
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates tzdata
 
-RUN cd apps/agent && bun build --compile --bytecode --minify --sourcemap src/index.ts --outfile=dist/server
+# Non-root user; /var/lib/tyz holds .env and the persisted auto-generated
+# default certificate ($HOME/.gost) for stable certs across restarts.
+RUN addgroup -S tyz && adduser -S tyz -G tyz \
+    && mkdir -p /var/lib/tyz && chown tyz:tyz /var/lib/tyz
+WORKDIR /var/lib/tyz
+ENV HOME=/var/lib/tyz
 
-# Same image as the builder: the compiled executable inherits the linkage of
-# the bun that built it (musl here), so the runtime matches it exactly. A bare
-# alpine would also work in theory, but emulation-built (QEMU/arm64) musl
-# binaries have had quirks — see oven-sh/bun#19536 — so keep build == runtime.
-FROM oven/bun:1-alpine
+COPY --from=build /out/tyz-agent /usr/local/bin/tyz-agent
 
-WORKDIR /app
-COPY --from=build --chown=bun:bun /app/apps/agent/dist/server ./server
-
-USER bun
+USER tyz
 EXPOSE 18090
 
 # Exec form so SIGTERM reaches the agent directly
-CMD ["./server"]
+ENTRYPOINT ["tyz-agent"]

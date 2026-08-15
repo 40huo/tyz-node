@@ -1,7 +1,7 @@
 /**
  * End-to-end push test against a running control plane (wrangler dev).
  *
- * Usage (inside apps/agent):
+ * Usage (inside apps/server):
  *   bun run scripts/test-ws-push.ts [baseUrl]
  *
  * Env: NODE_TOKEN (default "dev-token-1", the seed token), ADMIN_USER/ADMIN_PASS
@@ -10,7 +10,9 @@
  * Verifies: bad token rejected; hello on connect; ping/pong keepalive;
  * an admin write broadcasts {"type":"config_changed"} to the node's socket.
  */
-import { logger } from "@/utils/logger";
+// Plain console output: this script runs standalone against a wrangler dev
+// instance and has no workspace imports.
+const logger = { info: console.log, error: console.error } as const;
 
 const baseUrl = (process.argv[2] ?? "http://localhost:8787").replace(/\/$/, "");
 const wsUrl = `${baseUrl.replace(/^http/, "ws")}/api/agent/ws`;

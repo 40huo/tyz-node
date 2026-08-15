@@ -1,0 +1,88 @@
+// Package cp talks to the control-plane worker over HTTP: versioned config
+// fetch (304 when unchanged) and batched stats upload.
+package cp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/laoshan-tech/tyz-node/apps/agent/internal/model"
+)
+
+const httpTimeout = 30 * time.Second
+
+type Client struct {
+	baseURL string
+	token   string
+	http    *http.Client
+}
+
+func NewClient(baseURL, token string) *Client {
+	return &Client{
+		baseURL: baseURL,
+		token:   token,
+		http:    &http.Client{Timeout: httpTimeout},
+	}
+}
+
+// FetchConfig returns the config for the node. changed=false means the server
+// answered 304 (version unchanged).
+func (c *Client) FetchConfig(ctx context.Context, version int64) (resp *model.AgentConfigResponse, changed bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/api/agent/config?version=%d", c.baseURL, version), nil)
+	if err != nil {
+		return nil, false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	httpResp, err := c.http.Do(req)
+	if err != nil {
+		return nil, false, err
+	}
+	defer httpResp.Body.Close()
+
+	switch {
+	case httpResp.StatusCode == http.StatusNotModified:
+		return nil, false, nil
+	case httpResp.StatusCode == http.StatusOK:
+		var data model.AgentConfigResponse
+		if err := json.NewDecoder(httpResp.Body).Decode(&data); err != nil {
+			return nil, false, fmt.Errorf("config poll failed: decode body: %w", err)
+		}
+		return &data, true, nil
+	default:
+		return nil, false, fmt.Errorf("config poll failed: %d %s", httpResp.StatusCode, httpResp.Status)
+	}
+}
+
+// UploadStats posts one batch of stats samples.
+func (c *Client) UploadStats(ctx context.Context, samples []model.GostStatsSample) error {
+	body, err := json.Marshal(map[string]any{"samples": samples})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/api/agent/stats", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer httpResp.Body.Close()
+	io.Copy(io.Discard, httpResp.Body) //nolint:errcheck
+
+	if httpResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("stats upload failed: %d %s", httpResp.StatusCode, httpResp.Status)
+	}
+	return nil
+}

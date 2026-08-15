@@ -1,0 +1,161 @@
+{
+  "services": [
+    {
+      "name": "service-1",
+      "addr": ":8080",
+      "handler": {
+        "type": "tcp",
+        "chain": "chain-1"
+      },
+      "listener": {
+        "type": "tcp"
+      },
+      "forwarder": {
+        "nodes": [
+          {
+            "name": "target-1",
+            "addr": "target.example.com:80"
+          }
+        ]
+      },
+      "limiter": "limiter-service-1",
+      "rlimiter": "rlimiter-service-1",
+      "climiter": "climiter-service-1",
+      "metadata": {
+        "enableStats": "true"
+      },
+      "observer": "stats-observer"
+    },
+    {
+      "name": "service-2",
+      "addr": ":8443",
+      "handler": {
+        "type": "auto",
+        "chain": "chain-2"
+      },
+      "listener": {
+        "type": "tcp"
+      },
+      "metadata": {
+        "enableStats": "true"
+      },
+      "observer": "stats-observer"
+    }
+  ],
+  "chains": [
+    {
+      "name": "chain-1",
+      "hops": [
+        {
+          "name": "hop-1-0",
+          "nodes": [
+            {
+              "name": "node-1-t1",
+              "addr": "entry.example.com:80",
+              "connector": {
+                "type": "relay"
+              },
+              "dialer": {
+                "type": "tcp"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "chain-2",
+      "hops": [
+        {
+          "name": "hop-2-0",
+          "nodes": [
+            {
+              "name": "node-1-t2",
+              "addr": "192.168.1.100:10443",
+              "connector": {
+                "type": "forward"
+              },
+              "dialer": {
+                "type": "tls"
+              },
+              "tls": {
+                "validity": "8760h",
+                "commonName": "relay.example.com",
+                "organization": "ExampleOrg"
+              }
+            }
+          ]
+        },
+        {
+          "name": "hop-2-1",
+          "nodes": [
+            {
+              "name": "node-3-t2",
+              "addr": "192.168.1.100:10005",
+              "connector": {
+                "type": "relay"
+              },
+              "dialer": {
+                "type": "grpc"
+              }
+            }
+          ]
+        },
+        {
+          "name": "hop-2-2",
+          "nodes": [
+            {
+              "name": "node-4-t2",
+              "addr": "192.168.1.100:10006",
+              "connector": {
+                "type": "forward"
+              },
+              "dialer": {
+                "type": "ws"
+              },
+              "tls": {
+                "validity": "8760h",
+                "commonName": "relay.example.com",
+                "organization": "ExampleOrg"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "limiters": [
+    {
+      "name": "limiter-service-1",
+      "limits": ["$ 10485760 20971520"]
+    },
+    {
+      "name": "limiter-conn-1",
+      "limits": ["$$ 1048576 2097152"]
+    },
+    {
+      "name": "limiter-ip-1-0",
+      "limits": ["192.168.1.50 524288 1048576"]
+    }
+  ],
+  "rlimiters": [
+    {
+      "name": "rlimiter-service-1",
+      "limits": ["$ 100"]
+    },
+    {
+      "name": "rlimiter-ip-1-0",
+      "limits": ["192.168.1.50 10"]
+    }
+  ],
+  "climiters": [
+    {
+      "name": "climiter-service-1",
+      "limits": ["$ 1000"]
+    },
+    {
+      "name": "climiter-ip-1-0",
+      "limits": ["192.168.1.50 50"]
+    }
+  ]
+}

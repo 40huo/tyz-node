@@ -1,6 +1,6 @@
 # TYZ
 
-GOST 隧道管理平台：Cloudflare 上的控制面（Worker + D1 + 管理 Web）+ 运行在节点机上的 agent（Bun + Hono，与 GOST 同机部署）。
+GOST 隧道管理平台：Cloudflare 上的控制面（Worker + D1 + 管理 Web）+ 运行在节点机上的 agent（Go 单二进制，GOST 运行时内嵌在进程内）。
 
 ```
 ┌────────────────────────── Cloudflare ──────────────────────────┐
@@ -14,9 +14,10 @@ GOST 隧道管理平台：Cloudflare 上的控制面（Worker + D1 + 管理 Web�
         WS 推送 + 版本化拉取 GET /api/agent/config │ POST /api/agent/stats（批量统计）
                 │ (config_changed → 304 / 200)  │
 ┌───────────────┴───────────────────────────────┴────────────────┐
-│  节点机（Docker host 网络）                                       │
-│   agent (Bun) ──► GOST API 对象级 CRUD 热更新                    │
-│   GOST observer ──► agent /gost/observer ──► 统计缓冲后批量上报   │
+│  节点机（单容器，host 网络）                                       │
+│  tyz-agent（Go，内嵌 GOST 运行时）                                │
+│   ├─ 配置按对象 diff 热更新（进程内 registry，无需本地 HTTP）        │
+│   └─ observer 统计 ──► 缓冲 ──► 批量上报                          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -25,14 +26,14 @@ GOST 隧道管理平台：Cloudflare 上的控制面（Worker + D1 + 管理 Web�
 | 路径 | 说明 |
 |---|---|
 | `apps/server` | Cloudflare Worker 控制面：节点/隧道/链路/规则 CRUD、配置聚合下发、统计接收、管理面板托管 |
-| `apps/agent` | 节点 agent：WebSocket 推送优先（断连自动降级 HTTP 轮询并探测恢复）→ 生成 GOST 配置 → 热更新；缓冲上报 GOST 统计 |
+| `apps/agent` | 节点 agent（Go，内嵌 GOST 运行时）：WebSocket 推送优先（断连自动降级 HTTP 轮询并探测恢复）→ 生成 GOST 配置 → 进程内热更新；缓冲上报 GOST 统计 |
 | `apps/web` | 管理面板（React 18 + Vite + shadcn/ui + Tailwind），构建产物由 Worker Assets 托管 |
 | `packages/shared` | 三端共享的实体类型、zod schema、API DTO |
 | `examples` | 配置数据样例（`real-database-example.json`） |
 
 ## 本地开发
 
-前置：Bun ≥ 1.2。
+前置：Bun ≥ 1.2、Go ≥ 1.26。
 
 ```bash
 bun install
@@ -49,18 +50,16 @@ bun run dev        # wrangler dev
 # 2. 管理面板（端口 5173，/admin 等代理到 8787）
 cd ../.. && bun run dev:web
 
-# 3. 节点 agent（端口 18090）
+# 3. 节点 agent（端口 18090，GOST 已内嵌，无需单独安装）
 CONTROL_PLANE_URL=http://localhost:8787 NODE_TOKEN=dev-token-1 bun run dev:agent
+
+# 4. agent 测试（golden 配置生成 / WS 状态机 / 应用生命周期）
+bun run test:agent
 ```
 
 样例数据中节点 1 的 token 为 `dev-token-1`（对应 `.dev.vars` 中 `TOKEN_SALT=dev-token-salt`）。生产节点请在管理面板创建节点，Token 仅在创建/轮换时显示一次。
 
-完整数据面验证（可选）：本机安装 [GOST v3](https://gost.run) 后：
-
-```bash
-GOST_BINARY=/path/to/gost gost -C apps/agent/config/gost.json &
-# agent 会自动拉取配置并热更新 GOST；流量经过监听端口后统计会回流到 D1
-```
+完整数据面验证（可选）：向规则监听端口发流量（如 `curl http://localhost:8080`），流量经内嵌 GOST 转发到目标，统计会回流到 D1（管理面板节点统计或 `GET /api/admin/nodes/1/stats` 可见）。
 
 ## 部署
 
@@ -78,18 +77,18 @@ bun run --filter @tyz/web build     # Worker Assets 托管 ../web/dist
 bunx wrangler deploy
 ```
 
-CI：`deploy-server.yml`（手动触发或 v* tag，需 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` secrets）；`check.yml`（lint + 类型检查 + 前端构建）。
+CI：`deploy-server.yml`（手动触发或 v* tag，需 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` secrets）；`check.yml`（lint + 类型检查 + agent Go vet/test + 前端构建）。
 
 ### 节点机
 
 ```bash
-docker compose up -d   # gost (host 网络) + agent 镜像 ghcr.io/laoshan-tech/tyz-node
+docker compose up -d   # 单容器 tyz-app（镜像 ghcr.io/laoshan-tech/tyz-node，host 网络，GOST 内嵌）
 ```
 
-节点机 `.env`（参考 `apps/agent/.env.example`）：`CONTROL_PLANE_URL`、`NODE_TOKEN` 必填。
+节点机 `.env`（参考 `apps/agent/.env.example`）：`CONTROL_PLANE_URL`、`NODE_TOKEN` 必填。TLS 传输的自动证书持久化在容器卷 `tyz-data` 中，重启后证书保持不变。
 
 ## 说明
 
 - 配置下发优先走 WebSocket 长连接（`GET /api/agent/ws`）：管理端写操作实时推送 `config_changed`，agent 立即拉取（304/200 去重）；WS 在 60 秒内断连 3 次自动降级为 HTTP 轮询（默认 10s，`POLL_INTERVAL_MS` 可调），降级期间每 60 秒探测重连（`WS_PROBE_INTERVAL_MS` 可调），成功后自动切回推送模式；`WS_ENABLED=false` 可强制纯轮询。统计默认 60s 批量上报（`STATS_FLUSH_INTERVAL_MS`）。
-- GOST 侧通过 Web API 按对象增删改（services/chains/limiters），未变化的对象不会被重启。
+- agent 进程内按对象 diff 热更新 GOST（services/chains/limiters 走 go-gost registry），未变化的服务不会被重启。
 - 历史统计保留 30 天，由 Worker Cron 每日清理。

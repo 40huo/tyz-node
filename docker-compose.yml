@@ -1,16 +1,14 @@
 services:
-  gost:
-    image: gogost/gost:latest
-    container_name: tyz-gost
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./apps/agent/config/gost.json:/etc/gost/gost.json
-
   app:
     image: ghcr.io/laoshan-tech/tyz-node:latest
     container_name: tyz-app
     restart: unless-stopped
     network_mode: host
     volumes:
-      - ./.env:/app/.env
+      - ./.env:/var/lib/tyz/.env:ro
+      # Persist the auto-generated default certificate for stable TLS across
+      # restarts (mount a host path here instead if you prefer).
+      - tyz-data:/var/lib/tyz/.gost
+
+volumes:
+  tyz-data:

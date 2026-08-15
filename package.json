@@ -7,7 +7,8 @@
     "packages/*"
   ],
   "scripts": {
-    "dev:agent": "bun run --filter @tyz/agent dev",
+    "dev:agent": "cd apps/agent && go run .",
+    "test:agent": "cd apps/agent && go test ./...",
     "dev:server": "bun run --filter @tyz/server dev",
     "dev:web": "bun run --filter @tyz/web dev",
     "build:web": "bun run --filter @tyz/web build",
