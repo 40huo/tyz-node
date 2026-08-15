@@ -22,8 +22,9 @@ RUN mkdir -p /out && \
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata
 
-# Non-root user; /var/lib/tyz holds .env and the persisted auto-generated
-# default certificate ($HOME/.gost) for stable certs across restarts.
+# Non-root user; /var/lib/tyz holds .env, the persisted auto-generated default
+# certificate ($HOME/.gost) and the last-config.json bootstrap cache — mount a
+# volume on it to keep tunnels alive across restarts.
 RUN addgroup -S tyz && adduser -S tyz -G tyz \
     && mkdir -p /var/lib/tyz && chown tyz:tyz /var/lib/tyz
 WORKDIR /var/lib/tyz

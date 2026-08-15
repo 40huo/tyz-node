@@ -32,6 +32,11 @@ import (
 	"github.com/laoshan-tech/tyz-node/apps/agent/internal/statsobs"
 )
 
+// configCachePath is where the last applied config is persisted (working
+// directory, i.e. /var/lib/tyz in the container — mount it to keep tunnels
+// alive across restarts during control-plane outages).
+const configCachePath = "last-config.json"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "fatal:", err)
@@ -76,6 +81,9 @@ func run() error {
 	ctl := loop.New(cpClient, loop.Options{
 		PollInterval:       cfg.PollInterval,
 		StatsFlushInterval: cfg.StatsFlushInterval,
+		// Offline bootstrap: the last applied config is re-applied at startup
+		// so tunnels survive a control-plane outage across agent restarts.
+		CachePath: configCachePath,
 		Apply: func(data *model.NodeConfigData) error {
 			gostConfig, err := builder.Build(data)
 			if err != nil {

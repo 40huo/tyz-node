@@ -31,8 +31,11 @@ type Options struct {
 	PollInterval       time.Duration
 	StatsFlushInterval time.Duration
 	// WsChannel is optional; without it the loop always polls at PollInterval.
-	Ws    *cp.WsChannel
-	Apply ApplyConfig
+	Ws *cp.WsChannel
+	// CachePath optionally persists the last applied config and re-applies it
+	// at startup (offline bootstrap); empty disables the cache.
+	CachePath string
+	Apply     ApplyConfig
 }
 
 type Loop struct {
@@ -69,6 +72,8 @@ func (l *Loop) SetWSChannel(ws *cp.WsChannel) {
 // Start begins the poll loop and the stats flush ticker; it returns when ctx
 // is done, after a best-effort final stats flush.
 func (l *Loop) Start(ctx context.Context) {
+	l.bootstrapFromCache()
+
 	l.log.Info("Starting control plane client",
 		"pollInterval", l.opts.PollInterval.String(),
 		"statsFlushInterval", l.opts.StatsFlushInterval.String(),
@@ -201,6 +206,7 @@ func (l *Loop) pollOnce(ctx context.Context) error {
 		return err
 	}
 	l.configVersion = resp.Version
+	l.saveCache(resp)
 	l.log.Info("Config update applied", "version", resp.Version)
 	return nil
 }
