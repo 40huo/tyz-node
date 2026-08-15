@@ -126,6 +126,10 @@ export interface TlsConfig {
 // Complete node configuration delivered to agents
 export interface NodeConfigData {
   node: RelayNode;
+  /** Node records for every node the chains reference (incl. the recipient),
+   * so agents resolve each hop's dial address from its own node record.
+   * Optional: payloads without it fall back to `node` (legacy snapshots). */
+  nodes?: RelayNode[];
   rules: RelayRule[];
   tunnels: Tunnel[];
   chains: Chain[];

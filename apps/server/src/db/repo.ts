@@ -76,6 +76,12 @@ export async function getNode(db: Database, id: number): Promise<RelayNode | nul
   return row ? toRelayNode(row) : null;
 }
 
+export async function getNodesByIds(db: Database, ids: number[]): Promise<RelayNode[]> {
+  if (ids.length === 0) return [];
+  const rows = await db.select(nodeEntityColumns).from(relayNodes).where(inArray(relayNodes.id, ids)).all();
+  return rows.map(toRelayNode);
+}
+
 export async function getChainsForNode(db: Database, nodeId: number): Promise<Chain[]> {
   const rows = await db.select().from(chains).where(eq(chains.node_id, nodeId)).all();
   return rows;
@@ -162,9 +168,13 @@ export async function aggregateNodeConfig(db: Database, nodeId: number): Promise
   const tunnelsOf = await getTunnelsByIds(db, tunnelIds);
   const rules = await getRulesForTunnels(db, tunnelIds);
   const allChains = await getChainsForTunnels(db, tunnelIds);
+  // Node records for every node the chains reference, so agents can resolve
+  // dial addresses per hop (each chain row's node_id -> address + port range).
+  const chainNodes = await getNodesByIds(db, [...new Set(allChains.map((c) => c.node_id))]);
 
   const config: NodeConfigData = {
     node,
+    nodes: chainNodes,
     rules,
     tunnels: tunnelsOf,
     chains: allChains,

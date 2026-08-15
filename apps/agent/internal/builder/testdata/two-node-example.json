@@ -1,5 +1,5 @@
 {
-  "comment": "Two-node relay scenario mirroring a real production deployment: the entry node exposes one service per rule (all referencing one chain), the exit node runs a SINGLE relay listener for the whole tunnel — the relay protocol carries each connection's destination in-band, so N entry rules share one exit port, and that port is independent of (and may even numerically equal) the entry listen ports, which live on different machines. ingress_display_address on the tunnel is the address the entry dials for the relay handoff.",
+  "comment": "Two-node relay scenario mirroring a real production deployment: the entry node exposes one service per rule (all referencing one chain), the exit node runs a SINGLE relay listener for the whole tunnel — the relay protocol carries each connection's destination in-band, so N entry rules share one exit port, and that port is independent of (and may even numerically equal) the entry listen ports, which live on different machines. The entry dials the exit at the address resolved from the EXIT's own node record (nodes[].address + chain port); the tunnel's ingress_display_address is client-facing display metadata only — it carries a bogus value here to prove the builder ignores it.",
   "entry": {
     "node": {
       "id": 1,
@@ -16,7 +16,10 @@
         "targets": "127.0.0.1:19180",
         "status": "running",
         "limit": {
-          "traffic": { "service_in": 11534336, "service_out": 11534336 }
+          "traffic": {
+            "service_in": 11534336,
+            "service_out": 11534336
+          }
         }
       },
       {
@@ -32,7 +35,7 @@
       {
         "id": 2,
         "name": "tunnel-2",
-        "ingress_display_address": "127.0.0.1:16900"
+        "ingress_display_address": "entry-public.example.com:16535"
       }
     ],
     "chains": [
@@ -57,7 +60,24 @@
         "port": 16900
       }
     ],
-    "tls": { "commonName": "maca.net", "organization": "MACA" }
+    "tls": {
+      "commonName": "maca.net",
+      "organization": "MACA"
+    },
+    "nodes": [
+      {
+        "id": 1,
+        "name": "node-1",
+        "address": "127.0.0.1",
+        "ports": "10000-20000"
+      },
+      {
+        "id": 2,
+        "name": "node-2",
+        "address": "127.0.0.1",
+        "ports": "20000-30000"
+      }
+    ]
   },
   "exit": {
     "node": {
@@ -75,7 +95,10 @@
         "targets": "127.0.0.1:19180",
         "status": "running",
         "limit": {
-          "traffic": { "service_in": 11534336, "service_out": 11534336 }
+          "traffic": {
+            "service_in": 11534336,
+            "service_out": 11534336
+          }
         }
       },
       {
@@ -91,7 +114,7 @@
       {
         "id": 2,
         "name": "tunnel-2",
-        "ingress_display_address": "127.0.0.1:16900"
+        "ingress_display_address": "entry-public.example.com:16535"
       }
     ],
     "chains": [
@@ -116,6 +139,23 @@
         "port": 16900
       }
     ],
-    "tls": { "commonName": "maca.net", "organization": "MACA" }
+    "tls": {
+      "commonName": "maca.net",
+      "organization": "MACA"
+    },
+    "nodes": [
+      {
+        "id": 1,
+        "name": "node-1",
+        "address": "127.0.0.1",
+        "ports": "10000-20000"
+      },
+      {
+        "id": 2,
+        "name": "node-2",
+        "address": "127.0.0.1",
+        "ports": "20000-30000"
+      }
+    ]
   }
 }

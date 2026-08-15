@@ -39,8 +39,9 @@ type RelayNode struct {
 }
 
 type Tunnel struct {
-	ID                    int     `json:"id"`
-	IngressDisplayAddress *string `json:"ingress_display_address,omitempty"`
+	ID int `json:"id"`
+	// ingress_display_address is a client-facing display field (shown in the
+	// admin panel); it never takes part in GOST config generation.
 }
 
 type Chain struct {
@@ -67,7 +68,11 @@ type RelayRule struct {
 
 // NodeConfigData is the aggregated payload for one relay node.
 type NodeConfigData struct {
-	Node    RelayNode   `json:"node"`
+	Node RelayNode `json:"node"`
+	// Nodes carries the records of every node the chains reference (incl. the
+	// recipient) so each hop's dial address resolves from its own node record.
+	// Absent in legacy payloads; callers fall back to Node.
+	Nodes   []RelayNode `json:"nodes,omitempty"`
 	Rules   []RelayRule `json:"rules"`
 	Tunnels []Tunnel    `json:"tunnels"`
 	Chains  []Chain     `json:"chains"`

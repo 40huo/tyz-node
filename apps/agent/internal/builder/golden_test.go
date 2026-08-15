@@ -252,6 +252,43 @@ func TestDefaultTLS(t *testing.T) {
 	}
 }
 
+// TestChainAddrNodeResolution pins per-hop address resolution: each chain row
+// resolves against its own node record (address + port range); payloads
+// without the nodes list fall back to the recipient node.
+func TestChainAddrNodeResolution(t *testing.T) {
+	data := &model.NodeConfigData{
+		Node: model.RelayNode{ID: 1, Address: "10.0.0.1", Ports: "10000-20000"},
+		Nodes: []model.RelayNode{
+			{ID: 1, Address: "10.0.0.1", Ports: "10000-20000"},
+			{ID: 2, Address: "10.0.0.2", Ports: "20000-30000"},
+		},
+		Chains: []model.Chain{
+			{ID: 7, TunnelID: 1, NodeID: 2, ChainType: model.ChainOut, Transport: model.TransportRaw, Port: 16900},
+			{ID: 8, TunnelID: 1, NodeID: 2, ChainType: model.ChainOut, Transport: model.TransportRaw, Port: 0}, // allocate from node 2's range
+		},
+	}
+	b := &cfgBuilder{data: data}
+
+	got, err := b.chainAddr(&data.Chains[0])
+	if err != nil || got != "10.0.0.2:16900" {
+		t.Fatalf("chainAddr explicit port = %q, %v; want 10.0.0.2:16900", got, err)
+	}
+	got, err = b.chainAddr(&data.Chains[1])
+	if err != nil || got != "10.0.0.2:20010" { // 20000 + (8+2) % 10001
+		t.Fatalf("chainAddr allocated = %q, %v; want 10.0.0.2:20010", got, err)
+	}
+
+	// Legacy payload without nodes: fall back to the recipient's record.
+	legacy := &model.NodeConfigData{
+		Node:   model.RelayNode{ID: 1, Address: "10.0.0.1", Ports: "10000-20000"},
+		Chains: []model.Chain{{ID: 9, TunnelID: 1, NodeID: 2, ChainType: model.ChainOut, Port: 16900}},
+	}
+	got, err = (&cfgBuilder{data: legacy}).chainAddr(&legacy.Chains[0])
+	if err != nil || got != "10.0.0.1:16900" {
+		t.Fatalf("legacy chainAddr = %q, %v; want 10.0.0.1:16900", got, err)
+	}
+}
+
 // TestAllocatePortForChain pins the deterministic port formula.
 func TestAllocatePortForChain(t *testing.T) {
 	if got, err := allocatePortForChain("10000-20000", 5, 7); err != nil || got != 10012 {

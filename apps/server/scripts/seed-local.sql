@@ -27,9 +27,7 @@ VALUES
 INSERT INTO tunnels (id, name, ingress_display_address)
 VALUES
   (1, 'tunnel-1', 'entry.example.com:80'),
-  -- Address the tunnel-2 entry dials for the relay handoff (the exit's
-  -- relay listener); "ingress" naming is historical.
-  (2, 'tunnel-2', '127.0.0.1:16900');
+  (2, 'tunnel-2', 'entry.example.com:16535');
 
 INSERT INTO chains (id, tunnel_id, node_id, chain_type, transport, idx, strategy, port)
 VALUES

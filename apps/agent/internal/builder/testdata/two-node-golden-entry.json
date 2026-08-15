@@ -53,10 +53,10 @@
       "name": "chain-2",
       "hops": [
         {
-          "name": "hop-2-0",
+          "name": "hop-2-1",
           "nodes": [
             {
-              "name": "node-1-t2",
+              "name": "node-2-t2",
               "addr": "127.0.0.1:16900",
               "connector": {
                 "type": "relay"

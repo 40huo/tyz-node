@@ -128,20 +128,32 @@ func (b *cfgBuilder) chainForNodeInTunnel(t *model.Tunnel) *model.Chain {
 	return nil
 }
 
-// chainAddr resolves the address other nodes dial this chain node at.
-func (b *cfgBuilder) chainAddr(chain *model.Chain, tunnel *model.Tunnel) (string, error) {
-	if chain.ChainType == model.ChainIn && tunnel.IngressDisplayAddress != nil {
-		return *tunnel.IngressDisplayAddress, nil
+// nodeRecord resolves the RelayNode a chain row belongs to: prefer the nodes
+// list delivered by the control plane; fall back to the recipient node for
+// legacy payloads that only carried it.
+func (b *cfgBuilder) nodeRecord(nodeID int) *model.RelayNode {
+	for i := range b.data.Nodes {
+		if b.data.Nodes[i].ID == nodeID {
+			return &b.data.Nodes[i]
+		}
 	}
+	return &b.data.Node
+}
+
+// chainAddr resolves the address a chain row's node is dialed at: the node's
+// own address plus the chain port, auto-allocated from that node's port range
+// when 0 (the same deterministic formula the node itself uses for its relay
+// listener, so both sides agree without coordination).
+func (b *cfgBuilder) chainAddr(chain *model.Chain) (string, error) {
+	rec := b.nodeRecord(chain.NodeID)
 	port := chain.Port
 	if port == 0 {
 		var err error
-		port, err = allocatePortForChain(b.data.Node.Ports, chain.ID, b.data.Node.ID)
-		if err != nil {
+		if port, err = allocatePortForChain(rec.Ports, chain.ID, chain.NodeID); err != nil {
 			return "", err
 		}
 	}
-	return fmt.Sprintf("%s:%d", b.data.Node.Address, port), nil
+	return fmt.Sprintf("%s:%d", rec.Address, port), nil
 }
 
 // ---- services ----
@@ -221,17 +233,19 @@ func (b *cfgBuilder) entryService(rule *model.RelayRule, tunnel *model.Tunnel) (
 // relayService is the exit/relay-node shape: ONE relay listener per tunnel
 // (name service-t{tunnelId}), independent of the entry-side rule count. Its
 // port may even numerically equal an entry listen port — they live on
-// different machines. Port 0 auto-allocates from this node's port range.
+// different machines. Port 0 auto-allocates from this node's own chain row
+// (the same deterministic formula entries use to dial it).
 // Rule limiters apply at the entry services, not here.
 func (b *cfgBuilder) relayService(tunnel *model.Tunnel) (*config.ServiceConfig, error) {
 	nodeChain := b.chainForNodeInTunnel(tunnel)
 	if nodeChain == nil {
 		return nil, fmt.Errorf("node %d has no chain in tunnel %d", b.data.Node.ID, tunnel.ID)
 	}
+	rec := b.nodeRecord(nodeChain.NodeID) // == the recipient itself on exits
 	port := nodeChain.Port
 	if port == 0 {
 		var err error
-		if port, err = allocatePortForChain(b.data.Node.Ports, nodeChain.ID, b.data.Node.ID); err != nil {
+		if port, err = allocatePortForChain(rec.Ports, nodeChain.ID, nodeChain.NodeID); err != nil {
 			return nil, err
 		}
 	}
@@ -314,7 +328,7 @@ func (b *cfgBuilder) buildChains() error {
 		switch {
 		case len(chains) == 2:
 			if out := b.outChain(tunnel); out != nil {
-				chain, err := b.twoHopChain(tunnel, inChain, out)
+				chain, err := b.twoHopChain(tunnel, out)
 				if err != nil {
 					return err
 				}
@@ -331,17 +345,18 @@ func (b *cfgBuilder) buildChains() error {
 	return nil
 }
 
-// twoHopChain builds a chain containing only the IN node; the hop's connector
-// is overridden to relay so traffic is handed off to the exit node.
-func (b *cfgBuilder) twoHopChain(tunnel *model.Tunnel, inChain *model.Chain, out *model.Chain) (*config.ChainConfig, error) {
-	node, err := b.nodeConfig(inChain, tunnel, out.Transport, "relay")
+// twoHopChain builds a chain whose single hop is the EXIT node (its chain
+// row): the relay connector hands each connection's destination to the exit's
+// relay listener, dialed over the exit row's transport.
+func (b *cfgBuilder) twoHopChain(tunnel *model.Tunnel, out *model.Chain) (*config.ChainConfig, error) {
+	node, err := b.nodeConfig(out, tunnel, out.Transport, "relay")
 	if err != nil {
 		return nil, err
 	}
 	return &config.ChainConfig{
 		Name: chainName(tunnel.ID),
 		Hops: []*config.HopConfig{
-			{Name: hopName(tunnel.ID, inChain.Index), Nodes: []*config.NodeConfig{node}},
+			{Name: hopName(tunnel.ID, out.Index), Nodes: []*config.NodeConfig{node}},
 		},
 	}, nil
 }
@@ -373,7 +388,7 @@ func (b *cfgBuilder) nodeConfig(chain *model.Chain, tunnel *model.Tunnel, dialer
 	if connector == "" {
 		connector = connectorType(chain.ChainType)
 	}
-	addr, err := b.chainAddr(chain, tunnel)
+	addr, err := b.chainAddr(chain)
 	if err != nil {
 		return nil, err
 	}

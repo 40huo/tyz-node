@@ -114,6 +114,7 @@ export const relayRuleSchema = z.object({
 
 export const nodeConfigDataSchema = z.object({
   node: relayNodePayloadSchema,
+  nodes: z.array(relayNodePayloadSchema).optional(),
   rules: z.array(relayRuleSchema),
   tunnels: z.array(tunnelSchema),
   chains: z.array(chainSchema),
