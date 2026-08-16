@@ -111,8 +111,8 @@ func TestBuildTwoNodeGolden(t *testing.T) {
 	if len(exitCfg.Services) != 1 {
 		t.Fatalf("exit services = %d, want a single relay listener for both rules", len(exitCfg.Services))
 	}
-	if exitCfg.Services[0].Name != "service-t2" || exitCfg.Services[0].Addr != ":16900" {
-		t.Fatalf("exit service = %s %s, want service-t2 :16900", exitCfg.Services[0].Name, exitCfg.Services[0].Addr)
+	if exitCfg.Services[0].Name != "service-t2" || exitCfg.Services[0].Addr != ":46900" {
+		t.Fatalf("exit service = %s %s, want service-t2 :46900", exitCfg.Services[0].Name, exitCfg.Services[0].Addr)
 	}
 	if exitCfg.Services[0].Handler.Type != "relay" {
 		t.Fatalf("exit handler = %s, want relay", exitCfg.Services[0].Handler.Type)

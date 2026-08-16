@@ -79,6 +79,10 @@ func (a *Applier) Apply(desired *config.Config) error {
 	}
 
 	a.last = desired
+	// Publish the desired config to the GOST global view so the optional
+	// debug API (GOST_API_ADDR) serves it; the registries remain the runtime
+	// source of truth.
+	config.Set(desired)
 	a.log.Info("GOST config synced",
 		"services", len(desired.Services), "chains", len(desired.Chains))
 	return nil

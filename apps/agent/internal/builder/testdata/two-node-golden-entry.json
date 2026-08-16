@@ -2,7 +2,7 @@
   "services": [
     {
       "name": "service-2",
-      "addr": ":16535",
+      "addr": ":46535",
       "limiter": "limiter-service-2",
       "observer": "stats-observer",
       "handler": {
@@ -16,7 +16,7 @@
         "nodes": [
           {
             "name": "target-2",
-            "addr": "127.0.0.1:19180"
+            "addr": "127.0.0.1:49180"
           }
         ]
       },
@@ -26,7 +26,7 @@
     },
     {
       "name": "service-3",
-      "addr": ":16548",
+      "addr": ":46548",
       "observer": "stats-observer",
       "handler": {
         "type": "tcp",
@@ -39,7 +39,7 @@
         "nodes": [
           {
             "name": "target-3",
-            "addr": "127.0.0.1:19181"
+            "addr": "127.0.0.1:49181"
           }
         ]
       },
@@ -57,7 +57,7 @@
           "nodes": [
             {
               "name": "node-2-t2",
-              "addr": "127.0.0.1:16900",
+              "addr": "127.0.0.1:46900",
               "connector": {
                 "type": "relay"
               },
