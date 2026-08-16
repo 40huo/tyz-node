@@ -279,16 +279,18 @@
     }
   },
   "edge_function_example": {
-    "description": "你的 Supabase Edge Function 应该根据 node_id 查询并聚合以下数据",
+    "description": "控制面聚合逻辑的历史参考（Supabase Edge Function 时代）；当前实现见 apps/server/src/db/repo.ts 的 aggregateNodeConfig",
     "sql_logic": [
       "1. 查询 node.relay_nodes WHERE id = $node_id",
       "2. 查询 node.relay_rules WHERE node 相关 (通过 tunnel_id -> chains -> node_id)",
       "3. 查询 node.tunnels WHERE id IN (rule.tunnel_id)",
       "4. 查询 node.chains WHERE tunnel_id IN (...) ORDER BY index",
-      "5. 返回聚合的 JSON 对象 {node, rules, tunnels, chains, tls?}"
+      "5. 查询 nodes: chains 引用的全部节点记录（含接收节点），供 agent 解析各跳拨址",
+      "6. 返回聚合的 JSON 对象 {node, nodes, rules, tunnels, chains, tls?}"
     ],
     "return_format": {
-      "node": "RelayNode object",
+      "node": "RelayNode object（接收节点）",
+      "nodes": "RelayNode[]（chains 引用的全部节点记录，含接收节点）",
       "rules": "RelayRule[] array",
       "tunnels": "Tunnel[] array",
       "chains": "Chain[] array",
