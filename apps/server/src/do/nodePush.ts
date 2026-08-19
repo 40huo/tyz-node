@@ -8,12 +8,16 @@ import type { Bindings } from "../env";
  * returns the live sockets even after the DO was evicted between messages.
  *
  * Protocol (server -> agent):
- *   {"type":"hello"}           on connect
- *   {"type":"config_changed"}  broadcast after an admin write recomputed this node
+ *   {"type":"hello"}              on connect
+ *   {"type":"config_changed"}     broadcast after an admin write recomputed this node
+ *   {"type":"restart_service",
+ *    "service":"service-5"}       broadcast by the manual rule-restart endpoint;
+ *                                 the agent rebuilds that one service from its
+ *                                 last applied config (dropping live connections)
  * Protocol (agent -> server):
- *   "ping"  ->  "pong"         keepalive, answered by the runtime at the edge
- *                              via setWebSocketAutoResponse — the hibernated DO
- *                              is never woken for heartbeats
+ *   "ping"  ->  "pong"            keepalive, answered by the runtime at the edge
+ *                                 via setWebSocketAutoResponse — the hibernated DO
+ *                                 is never woken for heartbeats
  */
 export class NodePushDO implements DurableObject {
   constructor(
@@ -29,10 +33,17 @@ export class NodePushDO implements DurableObject {
     const url = new URL(request.url);
 
     if (url.pathname === "/notify" && request.method === "POST") {
+      // The body may carry a custom message object (e.g. a restart_service
+      // directive); an empty body defaults to the config_changed broadcast.
+      const message = await request.json().catch(() => null);
+      const payload =
+        message && typeof message === "object" && "type" in message
+          ? JSON.stringify(message)
+          : JSON.stringify({ type: "config_changed" });
       let notified = 0;
       for (const ws of this.state.getWebSockets()) {
         try {
-          ws.send(JSON.stringify({ type: "config_changed" }));
+          ws.send(payload);
           notified++;
         } catch {
           // Socket died before eviction caught up; the agent's heartbeat will

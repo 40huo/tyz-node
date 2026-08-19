@@ -1,244 +1,277 @@
-import { zodResolver } from "@hookform/resolvers/zod";
+import { Button, Chip, Table, toast } from "@heroui/react";
+import { IconPlus } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type CreateRuleInput, limiterConfigSchema, type RelayRule, RelayRuleStatus, type Tunnel } from "@tyz/shared";
-import { Loader2, Plus } from "lucide-react";
-import { useState } from "react";
-import { useForm } from "react-hook-form";
-import { toast } from "sonner";
-import { z } from "zod";
-import { EMPTY_SELECT_VALUE, NumberField, SelectField } from "@/components/form-fields";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
+  type AdminRuleRow,
+  type CreateRuleInput,
+  limiterConfigSchema,
+  type RelayRule,
+  RelayRuleStatus,
+  type Tunnel,
+  type UserListItem,
+} from "@tyz/shared";
+import { type FormEvent, useState } from "react";
 import { api } from "../api";
+import { confirmDanger } from "../confirm";
+import {
+  emptyState,
+  type FormErrors,
+  FormModal,
+  FormShell,
+  fail,
+  hasErrors,
+  Mono,
+  NumberForm,
+  PageHeader,
+  PageShell,
+  RowButton,
+  SelectForm,
+  SubmitButton,
+  TableLoading,
+  TextForm,
+  useFormValues,
+} from "../ui";
 
-const fail = (error: unknown) => toast.error(error instanceof Error ? error.message : "操作失败");
-
-const STATUS_BADGES: Record<string, string> = {
-  created: "bg-zinc-500/15 text-zinc-600 dark:text-zinc-400",
-  paused: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
-  running: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-  error: "bg-red-500/15 text-red-600 dark:text-red-400",
+const STATUS_COLOR: Record<string, "success" | "warning" | "danger" | "default"> = {
+  created: "default",
+  paused: "warning",
+  running: "success",
+  error: "danger",
 };
 
-const limitTextSchema = z.string().superRefine((value, ctx) => {
-  if (!value.trim()) return;
+const QUOTA_STOP_LABELS: Record<string, string> = {
+  user_disabled: "用户禁用",
+  no_subscription: "无订阅",
+  expired: "已过期",
+  exhausted: "流量耗尽",
+};
+
+function validateLimitText(value: string): string | undefined {
+  const text = value.trim();
+  if (!text) return undefined;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(value);
+    parsed = JSON.parse(text);
   } catch {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "不是合法的 JSON" });
-    return;
+    return "不是合法的 JSON";
   }
   const result = limiterConfigSchema.safeParse(parsed);
-  if (!result.success) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `限速配置无效: ${result.error.issues[0]?.message ?? ""}` });
-  }
-});
+  if (!result.success) return `限速配置无效: ${result.error.issues[0]?.message ?? ""}`;
+  return undefined;
+}
 
-const ruleFormSchema = z.object({
-  name: z.string().min(1, "请输入名称"),
-  listen_port: z
-    .number({ invalid_type_error: "请输入监听端口" })
-    .int("端口需为整数")
-    .min(1, "端口范围 1-65535")
-    .max(65535, "端口范围 1-65535"),
-  targets: z.string().min(1, "请输入目标地址"),
-  /** Select 值：EMPTY_SELECT_VALUE 表示不部署，否则为隧道 id 字符串 */
-  tunnel_id: z.string(),
-  status: z.nativeEnum(RelayRuleStatus),
-  limitText: limitTextSchema,
-  description: z.string().optional(),
-});
+// ---- Rule form ----
+
+interface RuleFormValues {
+  name: string;
+  listen_port: number;
+  targets: string;
+  status: string;
+  description: string;
+  tunnel_id: string | null;
+  user_id: string | null;
+  limitText: string;
+}
+
+function ruleFormValues(rule: RelayRule | null): RuleFormValues {
+  return rule
+    ? {
+        name: rule.name,
+        listen_port: rule.listen_port,
+        targets: rule.targets,
+        tunnel_id: rule.tunnel_id === undefined ? null : String(rule.tunnel_id),
+        user_id: rule.user_id === undefined ? null : String(rule.user_id),
+        status: rule.status,
+        limitText: rule.limit ? JSON.stringify(rule.limit, null, 2) : "",
+        description: rule.description ?? "",
+      }
+    : {
+        name: "",
+        listen_port: 0,
+        targets: "",
+        tunnel_id: null,
+        user_id: null,
+        status: RelayRuleStatus.CREATED,
+        limitText: "",
+        description: "",
+      };
+}
 
 function RuleDialog({
   rule,
   tunnels,
-  open,
-  onOpenChange,
+  users,
+  opened,
+  onClose,
 }: {
   rule: RelayRule | null;
   tunnels: Tunnel[];
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  users: UserListItem[];
+  opened: boolean;
+  onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const form = useForm<z.infer<typeof ruleFormSchema>>({
-    resolver: zodResolver(ruleFormSchema),
-    defaultValues: rule
-      ? {
-          name: rule.name,
-          listen_port: rule.listen_port,
-          targets: rule.targets,
-          tunnel_id: rule.tunnel_id === undefined ? EMPTY_SELECT_VALUE : String(rule.tunnel_id),
-          status: rule.status,
-          limitText: rule.limit ? JSON.stringify(rule.limit, null, 2) : "",
-          description: rule.description ?? "",
-        }
-      : {
-          name: "",
-          listen_port: undefined,
-          targets: "",
-          tunnel_id: EMPTY_SELECT_VALUE,
-          status: RelayRuleStatus.CREATED,
-          limitText: "",
-          description: "",
-        },
-  });
-
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["rules"] });
+
   const createMutation = useMutation({
     mutationFn: (input: CreateRuleInput) => api.createRule(input),
     onSuccess: () => {
       invalidate();
-      onOpenChange(false);
+      onClose();
     },
     onError: fail,
   });
   const updateMutation = useMutation({
-    mutationFn: (values: { id: number; input: CreateRuleInput }) => api.updateRule(values.id, values.input),
+    mutationFn: (input: CreateRuleInput) => api.updateRule(rule!.id, input),
     onSuccess: () => {
       invalidate();
-      onOpenChange(false);
+      onClose();
     },
     onError: fail,
   });
 
-  const onSubmit = (values: z.infer<typeof ruleFormSchema>) => {
-    const { limitText, tunnel_id, ...rest } = values;
-    const input = {
-      ...rest,
-      description: rest.description || undefined,
-      tunnel_id: tunnel_id === EMPTY_SELECT_VALUE ? undefined : Number(tunnel_id),
-      limit: limitText.trim() === "" ? null : (JSON.parse(limitText) as CreateRuleInput["limit"]),
-    } satisfies CreateRuleInput;
-    if (rule === null) {
-      createMutation.mutate(input);
-    } else {
-      updateMutation.mutate({ id: rule.id, input });
-    }
+  return (
+    <FormModal
+      title={rule === null ? "新建规则" : `编辑规则 #${rule.id}`}
+      isOpen={opened}
+      onClose={onClose}
+      width="sm:max-w-lg"
+    >
+      {opened && (
+        <RuleForm
+          key={rule?.id ?? "create"}
+          rule={rule}
+          tunnels={tunnels}
+          users={users}
+          submitting={createMutation.isPending || updateMutation.isPending}
+          onCancel={onClose}
+          onSubmit={(input) => {
+            if (rule === null) createMutation.mutate(input);
+            else updateMutation.mutate(input);
+          }}
+        />
+      )}
+    </FormModal>
+  );
+}
+
+function RuleForm({
+  rule,
+  tunnels,
+  users,
+  onSubmit,
+  submitting,
+  onCancel,
+}: {
+  rule: RelayRule | null;
+  tunnels: Tunnel[];
+  users: UserListItem[];
+  onSubmit: (input: CreateRuleInput) => void;
+  submitting: boolean;
+  onCancel: () => void;
+}) {
+  const { values, set } = useFormValues(() => ruleFormValues(rule));
+  const [errors, setErrors] = useState<FormErrors<RuleFormValues>>({});
+
+  const onSubmitForm = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const errs: FormErrors<RuleFormValues> = {};
+    if (!values.name.trim()) errs.name = "请输入名称";
+    if (!values.targets.trim()) errs.targets = "请输入目标地址";
+    if (values.listen_port < 1 || values.listen_port > 65535) errs.listen_port = "端口范围 1-65535";
+    const limitError = validateLimitText(values.limitText);
+    if (limitError) errs.limitText = limitError;
+    setErrors(errs);
+    if (hasErrors(errs)) return;
+
+    onSubmit({
+      name: values.name,
+      listen_port: values.listen_port,
+      targets: values.targets,
+      status: values.status as RelayRuleStatus,
+      description: values.description || undefined,
+      tunnel_id: values.tunnel_id ? Number(values.tunnel_id) : null,
+      user_id: values.user_id ? Number(values.user_id) : null,
+      limit: values.limitText.trim() === "" ? null : (JSON.parse(values.limitText) as CreateRuleInput["limit"]),
+    });
   };
 
-  const pending = createMutation.isPending || updateMutation.isPending;
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{rule === null ? "新建规则" : `编辑规则 #${rule.id}`}</DialogTitle>
-        </DialogHeader>
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="grid gap-4">
-            <FormField
-              control={form.control}
-              name="name"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>名称</FormLabel>
-                  <FormControl>
-                    <Input {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <div className="grid grid-cols-2 gap-3">
-              <NumberField control={form.control} name="listen_port" label="监听端口" min={1} max={65535} />
-              <SelectField
-                control={form.control}
-                name="status"
-                label="状态"
-                options={Object.values(RelayRuleStatus).map((v) => ({ value: v, label: v }))}
-              />
-            </div>
-            <FormField
-              control={form.control}
-              name="targets"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>目标地址</FormLabel>
-                  <FormControl>
-                    <Input {...field} />
-                  </FormControl>
-                  <FormDescription>如 example.com:80</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <SelectField
-              control={form.control}
-              name="tunnel_id"
-              label="所属隧道"
-              allowEmpty
-              emptyLabel="不指定"
-              description="不选则仅本节点直连转发"
-              options={tunnels.map((t) => ({ value: String(t.id), label: `${t.name} (#${t.id})` }))}
-            />
-            <FormField
-              control={form.control}
-              name="limitText"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>限速配置 (JSON)</FormLabel>
-                  <FormControl>
-                    <Textarea rows={4} className="font-mono text-xs" {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    JSON 对象，如 {"{"}"traffic": {"{"}"service_in": 1048576{"}"}
-                    {"}"}；留空表示不限速
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="description"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>描述</FormLabel>
-                  <FormControl>
-                    <Textarea rows={2} {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                取消
-              </Button>
-              <Button type="submit" disabled={pending}>
-                {pending ? <Loader2 className="size-4 animate-spin" /> : null}
-                保存
-              </Button>
-            </DialogFooter>
-          </form>
-        </Form>
-      </DialogContent>
-    </Dialog>
+    <FormShell onSubmit={onSubmitForm}>
+      <TextForm label="名称" isRequired value={values.name} onChange={(v) => set("name", v)} error={errors.name} />
+      <div className="grid grid-cols-2 gap-3">
+        <NumberForm
+          label="监听端口"
+          minValue={1}
+          maxValue={65535}
+          value={values.listen_port}
+          onChange={(v) => set("listen_port", v ?? 0)}
+          error={errors.listen_port}
+        />
+        <SelectForm
+          label="状态"
+          options={Object.values(RelayRuleStatus).map((v) => ({ value: v, label: v }))}
+          value={values.status}
+          onChange={(v) => set("status", String(v))}
+        />
+      </div>
+      <TextForm
+        label="目标地址"
+        isRequired
+        placeholder="如 example.com:80"
+        value={values.targets}
+        onChange={(v) => set("targets", v)}
+        error={errors.targets}
+      />
+      <div className="grid grid-cols-2 gap-3">
+        <SelectForm
+          label="所属隧道"
+          placeholder="不指定（直连转发）"
+          options={[
+            { value: "", label: "不指定（直连转发）" },
+            ...tunnels.map((t) => ({ value: String(t.id), label: `${t.name} (#${t.id})` })),
+          ]}
+          value={values.tunnel_id}
+          onChange={(v) => set("tunnel_id", (v as string | null) ?? null)}
+        />
+        <SelectForm
+          label="所属用户"
+          placeholder="管理员（无配额）"
+          options={[
+            { value: "", label: "管理员（无配额）" },
+            ...users.map((u) => ({ value: String(u.id), label: `${u.name} (#${u.id})` })),
+          ]}
+          value={values.user_id}
+          onChange={(v) => set("user_id", (v as string | null) ?? null)}
+        />
+      </div>
+      <TextForm
+        label="限速配置 (JSON)"
+        multiline
+        hint='如 {"traffic":{"service_in":1048576}}；留空不限速'
+        inputProps={{ rows: 4, className: "font-mono text-xs" }}
+        value={values.limitText}
+        onChange={(v) => set("limitText", v)}
+        error={errors.limitText}
+      />
+      <TextForm
+        label="描述"
+        multiline
+        inputProps={{ rows: 2 }}
+        value={values.description}
+        onChange={(v) => set("description", v)}
+      />
+      <div className="flex justify-end gap-2">
+        <Button variant="tertiary" onPress={onCancel}>
+          取消
+        </Button>
+        <SubmitButton isPending={submitting}>保存</SubmitButton>
+      </div>
+    </FormShell>
   );
 }
 
 // ---- Page ----
-
-const RULE_COLUMNS = 8;
 
 export default function RulesPage() {
   const queryClient = useQueryClient();
@@ -247,127 +280,143 @@ export default function RulesPage() {
 
   const rulesQuery = useQuery({ queryKey: ["rules"], queryFn: api.listRules });
   const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
+  const usersQuery = useQuery({ queryKey: ["users"], queryFn: api.listUsers });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["rules"] });
   const deleteMutation = useMutation({ mutationFn: api.deleteRule, onSuccess: invalidate, onError: fail });
+  const restartMutation = useMutation({
+    mutationFn: api.restartRule,
+    onSuccess: (res) => toast(`重启指令已下发（${res.nodes} 个节点）：现有连接将被断开并立即重建监听`),
+    onError: fail,
+  });
 
   const tunnels = tunnelsQuery.data?.tunnels ?? [];
-  const rules = rulesQuery.data?.rules ?? [];
+  const users = usersQuery.data?.users ?? [];
+  const rules: AdminRuleRow[] = rulesQuery.data?.rules ?? [];
 
   return (
-    <div className="grid gap-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>转发规则列表</CardTitle>
-          <CardDescription>定义入口节点的监听端口与转发目标</CardDescription>
-          <CardAction>
-            <Button onClick={() => setCreating(true)}>
-              <Plus />
-              新建规则
-            </Button>
-          </CardAction>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-12">ID</TableHead>
-                <TableHead>名称</TableHead>
-                <TableHead>监听端口</TableHead>
-                <TableHead>目标</TableHead>
-                <TableHead>隧道</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead>限速</TableHead>
-                <TableHead className="text-right">操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rulesQuery.isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={RULE_COLUMNS} className="h-24 text-center text-muted-foreground">
-                    加载中…
-                  </TableCell>
-                </TableRow>
-              ) : rules.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={RULE_COLUMNS} className="h-24 text-center text-muted-foreground">
-                    暂无数据，点击右上角「新建规则」开始
-                  </TableCell>
-                </TableRow>
-              ) : (
-                rules.map((rule) => (
-                  <TableRow key={rule.id}>
-                    <TableCell className="font-mono">{rule.id}</TableCell>
-                    <TableCell className="font-medium">{rule.name}</TableCell>
-                    <TableCell className="font-mono">{rule.listen_port}</TableCell>
-                    <TableCell className="font-mono text-xs">{rule.targets}</TableCell>
-                    <TableCell>
-                      {rule.tunnel_id ? (
-                        <>
-                          {tunnels.find((t) => t.id === rule.tunnel_id)?.name ?? "?"}{" "}
-                          <span className="text-muted-foreground">#{rule.tunnel_id}</span>
-                        </>
+    <PageShell>
+      <PageHeader
+        title="转发规则列表"
+        description="定义入口节点的监听端口与转发目标"
+        action={
+          <Button onPress={() => setCreating(true)}>
+            <IconPlus size={16} />
+            新建规则
+          </Button>
+        }
+      />
+      {rulesQuery.isLoading ? (
+        <TableLoading />
+      ) : (
+        <Table.ScrollContainer>
+          <Table className="min-w-[960px]">
+            <Table.Content aria-label="转发规则列表">
+              <Table.Header>
+                <Table.Column id="id" defaultWidth={60} isRowHeader>
+                  ID
+                </Table.Column>
+                <Table.Column id="name">名称</Table.Column>
+                <Table.Column id="port" defaultWidth={80}>
+                  端口
+                </Table.Column>
+                <Table.Column id="targets">目标</Table.Column>
+                <Table.Column id="tunnel" defaultWidth={130}>
+                  隧道
+                </Table.Column>
+                <Table.Column id="user" defaultWidth={100}>
+                  用户
+                </Table.Column>
+                <Table.Column id="status" defaultWidth={210}>
+                  状态
+                </Table.Column>
+                <Table.Column id="actions" defaultWidth={150}>
+                  <span className="flex justify-end">操作</span>
+                </Table.Column>
+              </Table.Header>
+              <Table.Body items={rules} renderEmptyState={emptyState("暂无数据，点击「新建规则」开始")}>
+                {(r) => (
+                  <Table.Row id={r.id}>
+                    <Table.Cell>
+                      <Mono>{r.id}</Mono>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <span className="font-medium">{r.name}</span>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <Mono>{r.listen_port}</Mono>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <Mono>{r.targets}</Mono>
+                    </Table.Cell>
+                    <Table.Cell>
+                      {r.tunnel_id ? (
+                        <span>
+                          {tunnels.find((t) => t.id === r.tunnel_id)?.name ?? "?"}{" "}
+                          <Mono className="text-muted">#{r.tunnel_id}</Mono>
+                        </span>
                       ) : (
                         "-"
                       )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className={STATUS_BADGES[rule.status] ?? ""}>
-                        {rule.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{rule.limit ? "已配置" : "-"}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center justify-end gap-3">
-                        <Button variant="link" size="sm" className="h-auto p-0" onClick={() => setEditing(rule)}>
-                          编辑
-                        </Button>
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button variant="link" size="sm" className="h-auto p-0 text-destructive">
-                              删除
-                            </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>删除规则</AlertDialogTitle>
-                              <AlertDialogDescription>确定删除该规则？</AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>取消</AlertDialogCancel>
-                              <AlertDialogAction
-                                className="bg-destructive text-white hover:bg-destructive/90"
-                                onClick={() => deleteMutation.mutate(rule.id)}
-                              >
-                                删除
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
+                    </Table.Cell>
+                    <Table.Cell>
+                      {r.user_id !== undefined ? (
+                        (users.find((u) => u.id === r.user_id)?.name ?? "?")
+                      ) : (
+                        <span className="text-muted">管理员</span>
+                      )}
+                    </Table.Cell>
+                    <Table.Cell>
+                      <div className="flex items-center gap-1">
+                        <Chip color={STATUS_COLOR[r.status] ?? "default"} variant="soft" size="sm">
+                          <Chip.Label>{r.status}</Chip.Label>
+                        </Chip>
+                        {r.quota_stopped && (
+                          <Chip
+                            color="danger"
+                            variant="soft"
+                            size="sm"
+                            title={`配额硬停：该规则已从节点配置中剔除（原因：${QUOTA_STOP_LABELS[r.quota_reason ?? ""] ?? r.quota_reason}）`}
+                          >
+                            <Chip.Label>
+                              配额停用 · {QUOTA_STOP_LABELS[r.quota_reason ?? ""] ?? r.quota_reason}
+                            </Chip.Label>
+                          </Chip>
+                        )}
                       </div>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <div className="flex justify-end gap-1">
+                        <RowButton onPress={() => setEditing(r)}>编辑</RowButton>
+                        <RowButton isDisabled={restartMutation.isPending} onPress={() => restartMutation.mutate(r.id)}>
+                          重启
+                        </RowButton>
+                        <RowButton
+                          danger
+                          onPress={() =>
+                            confirmDanger("删除规则", "确定删除该规则？", () => deleteMutation.mutate(r.id))
+                          }
+                        >
+                          删除
+                        </RowButton>
+                      </div>
+                    </Table.Cell>
+                  </Table.Row>
+                )}
+              </Table.Body>
+            </Table.Content>
           </Table>
-        </CardContent>
-      </Card>
+        </Table.ScrollContainer>
+      )}
 
+      <RuleDialog rule={null} tunnels={tunnels} users={users} opened={creating} onClose={() => setCreating(false)} />
       <RuleDialog
-        key="create"
-        rule={null}
-        tunnels={tunnels}
-        open={creating}
-        onOpenChange={(o) => !o && setCreating(false)}
-      />
-      <RuleDialog
-        key={editing?.id ?? "edit"}
         rule={editing}
         tunnels={tunnels}
-        open={editing !== null}
-        onOpenChange={(o) => !o && setEditing(null)}
+        users={users}
+        opened={editing !== null}
+        onClose={() => setEditing(null)}
       />
-    </div>
+    </PageShell>
   );
 }

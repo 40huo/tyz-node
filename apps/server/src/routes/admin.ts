@@ -1,24 +1,43 @@
-import type { Chain, RelayRule, Tunnel } from "@tyz/shared";
+import type { AdminRuleRow, Chain, Package, RelayRule, Tunnel, User, UserSubscription } from "@tyz/shared";
 import {
   createChainSchema,
   createNodeSchema,
+  createPackageSchema,
   createRuleSchema,
   createTunnelSchema,
+  createUserSchema,
   loginSchema,
   type NodeWithMeta,
+  subscribeSchema,
   updateChainSchema,
   updateNodeSchema,
+  updatePackageSchema,
   updateRuleSchema,
   updateTunnelSchema,
+  updateUserSchema,
 } from "@tyz/shared";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte } from "drizzle-orm";
 import { Hono } from "hono";
 import { createDb, type Database } from "../db";
 import { nodeEntityColumns, recomputeNodeConfig, toRelayNode, toRelayRule, toTunnel } from "../db/repo";
-import { chains, gostStats, nodeConfigs, relayNodes, relayRules, tunnels } from "../db/schema";
+import {
+  chains,
+  gostStats,
+  nodeConfigs,
+  packages,
+  relayNodes,
+  relayRules,
+  serviceHealth,
+  serviceMetricsHourly,
+  tunnels,
+  userPackages,
+  users,
+} from "../db/schema";
 import type { Bindings } from "../env";
 import { adminAuth, clearSessionCookie, issueSessionCookie, verifyAdminCredentials } from "../middleware/adminAuth";
-import { notifyConfigChanged } from "../services/notify";
+import { listAudit, recordAudit } from "../services/audit";
+import { broadcastNodeMessage, notifyConfigChanged } from "../services/notify";
+import { getActiveSubscriptions, quotaDecisionsForUsers, userQuotaSummary } from "../services/quota";
 import { hashNodeToken } from "../utils/crypto";
 
 export const adminRoutes = new Hono<{ Bindings: Bindings }>();
@@ -64,23 +83,38 @@ function generateNodeToken(): string {
 
 /** Recompute one node's snapshot and push a change notification to its agent. */
 async function recomputeAndNotify(env: Bindings, nodeId: number): Promise<boolean> {
-  const changed = await recomputeNodeConfig(createDb(env.DB), nodeId);
-  if (changed) {
+  const res = await recomputeNodeConfig(createDb(env.DB), nodeId);
+  if (res.changed) {
     await notifyConfigChanged(env, [nodeId]);
   }
-  return changed;
+  return res.ok;
 }
 
 /** Recompute config snapshots for every node that has a chain in the tunnel, then notify them. */
 async function recomputeTunnelNodes(env: Bindings, tunnelId: number): Promise<void> {
   const db = createDb(env.DB);
   const rows = await db.selectDistinct({ node_id: chains.node_id }).from(chains).where(eq(chains.tunnel_id, tunnelId));
-  const nodeIds = rows.map((r) => r.node_id);
-  for (const nodeId of nodeIds) {
-    await recomputeNodeConfig(db, nodeId);
+  const changed: number[] = [];
+  for (const { node_id } of rows) {
+    const res = await recomputeNodeConfig(db, node_id);
+    if (res.changed) changed.push(node_id);
   }
-  if (nodeIds.length > 0) {
-    await notifyConfigChanged(env, nodeIds);
+  if (changed.length > 0) {
+    await notifyConfigChanged(env, changed);
+  }
+}
+
+/** Recompute every node serving one user's rules (ownership/quota changes). */
+async function recomputeUserNodes(env: Bindings, userId: number): Promise<void> {
+  const db = createDb(env.DB);
+  const rows = await db
+    .selectDistinct({ tunnel_id: relayRules.tunnel_id })
+    .from(relayRules)
+    .where(eq(relayRules.user_id, userId));
+  for (const { tunnel_id } of rows) {
+    if (tunnel_id !== null) {
+      await recomputeTunnelNodes(env, tunnel_id);
+    }
   }
 }
 
@@ -141,6 +175,7 @@ adminRoutes.post("/nodes", async (c) => {
       ports: input.ports,
       traffic_limit: input.traffic_limit,
       enlarge_scale: input.enlarge_scale,
+      rate: input.rate,
       custom_cfg: input.custom_cfg ?? null,
       tls_config: input.tls_config ?? null,
       created_at: ts,
@@ -148,6 +183,7 @@ adminRoutes.post("/nodes", async (c) => {
     })
     .returning({ id: relayNodes.id });
 
+  await recordAudit(c.env, { action: "node.create", targetType: "node", targetId: inserted.id, detail: input.name });
   await recomputeAndNotify(c.env, inserted.id);
   const node = await nodeWithMeta(createDb(c.env.DB), inserted.id);
   return c.json({ node, token }, 201);
@@ -178,6 +214,7 @@ adminRoutes.put("/nodes/:id", async (c) => {
   if (input.ports !== undefined) patch.ports = input.ports;
   if (input.traffic_limit !== undefined) patch.traffic_limit = input.traffic_limit;
   if (input.enlarge_scale !== undefined) patch.enlarge_scale = input.enlarge_scale;
+  if (input.rate !== undefined) patch.rate = input.rate;
   if (input.custom_cfg !== undefined) patch.custom_cfg = input.custom_cfg;
   if (input.tls_config !== undefined) patch.tls_config = input.tls_config;
 
@@ -187,6 +224,7 @@ adminRoutes.put("/nodes/:id", async (c) => {
   patch.updated_at = now();
 
   await createDb(c.env.DB).update(relayNodes).set(patch).where(eq(relayNodes.id, id)).run();
+  await recordAudit(c.env, { action: "node.update", targetType: "node", targetId: id, detail: input.name ?? "" });
 
   await recomputeAndNotify(c.env, id);
   const node = await nodeWithMeta(createDb(c.env.DB), id);
@@ -209,6 +247,7 @@ adminRoutes.delete("/nodes/:id", async (c) => {
   for (const { tunnel_id } of tunnelRows) {
     await recomputeTunnelNodes(c.env, tunnel_id);
   }
+  await recordAudit(c.env, { action: "node.delete", targetType: "node", targetId: id });
   return c.json({ ok: true });
 });
 
@@ -231,6 +270,7 @@ adminRoutes.post("/nodes/:id/rotate-token", async (c) => {
   if (updated.length === 0) {
     return c.json({ error: "node not found" }, 404);
   }
+  await recordAudit(c.env, { action: "node.rotate_token", targetType: "node", targetId: id });
   return c.json({ id, token });
 });
 
@@ -248,6 +288,26 @@ adminRoutes.get("/nodes/:id/stats", async (c) => {
     .where(eq(gostStats.node_id, id))
     .orderBy(desc(gostStats.id))
     .limit(limit);
+  return c.json({ rows });
+});
+
+/** Hourly per-service connection rollup (avg via sum/samples, plus peak). */
+adminRoutes.get("/nodes/:id/metrics", async (c) => {
+  const id = Number(c.req.param("id"));
+  const hours = Math.min(Number(c.req.query("hours") ?? 24), 168);
+  const since = `${new Date(Date.now() - hours * 3600_000).toISOString().slice(0, 13)}:00:00.000Z`;
+  const rows = await createDb(c.env.DB)
+    .select()
+    .from(serviceMetricsHourly)
+    .where(and(eq(serviceMetricsHourly.node_id, id), gte(serviceMetricsHourly.hour_ts, since)))
+    .orderBy(serviceMetricsHourly.hour_ts);
+  return c.json({ rows });
+});
+
+/** Latest runtime state per service on a node, as reported with stats batches. */
+adminRoutes.get("/nodes/:id/health", async (c) => {
+  const id = Number(c.req.param("id"));
+  const rows = await createDb(c.env.DB).select().from(serviceHealth).where(eq(serviceHealth.node_id, id));
   return c.json({ rows });
 });
 
@@ -411,9 +471,67 @@ adminRoutes.delete("/chains/:id", async (c) => {
 
 // ---- Relay rules ----
 
+/**
+ * Validate a user-owned rule against its owner's package: subscription state,
+ * tunnel/node access rights, and the rule-count limit. Returns an error
+ * message, or null when the write is allowed. Admin-owned rules (no user_id)
+ * are never gated.
+ */
+async function validateRuleOwnership(
+  db: Database,
+  userId: number,
+  tunnelId: number | null,
+  excludeRuleId?: number,
+): Promise<string | null> {
+  const user = await db.select().from(users).where(eq(users.id, userId)).get();
+  if (!user) return `user ${userId} not found`;
+  if (user.status !== "active") return `user ${userId} is disabled`;
+  const sub = (await getActiveSubscriptions(db, [userId])).get(userId);
+  if (!sub) return `user ${userId} has no active subscription`;
+  if (sub.expired) return `subscription of user ${userId} (package ${sub.pkg.name}) has expired`;
+
+  if (tunnelId !== null) {
+    if (sub.pkg.tunnel_ids !== null && !sub.pkg.tunnel_ids.includes(tunnelId)) {
+      return `package ${sub.pkg.name} does not grant access to tunnel ${tunnelId}`;
+    }
+    if (sub.pkg.node_ids !== null) {
+      const chainRows = await db
+        .selectDistinct({ node_id: chains.node_id })
+        .from(chains)
+        .where(eq(chains.tunnel_id, tunnelId));
+      const missing = chainRows.map((r) => r.node_id).filter((id) => !sub.pkg.node_ids?.includes(id));
+      if (missing.length > 0) {
+        return `package ${sub.pkg.name} does not grant access to node(s) ${missing.join(", ")} of tunnel ${tunnelId}`;
+      }
+    }
+  }
+
+  if (sub.pkg.max_rules > 0) {
+    const owned = await db.select({ id: relayRules.id }).from(relayRules).where(eq(relayRules.user_id, userId));
+    const count = owned.filter((r) => r.id !== excludeRuleId).length;
+    if (count >= sub.pkg.max_rules) {
+      return `package ${sub.pkg.name} allows at most ${sub.pkg.max_rules} rules (user ${userId} already has ${count})`;
+    }
+  }
+  return null;
+}
+
 adminRoutes.get("/rules", async (c) => {
-  const rows = await createDb(c.env.DB).select().from(relayRules).orderBy(relayRules.id);
-  const rules: RelayRule[] = rows.map(toRelayRule);
+  const db = createDb(c.env.DB);
+  const rows = await db.select().from(relayRules).orderBy(relayRules.id);
+  const rules: AdminRuleRow[] = rows.map(toRelayRule);
+  // Attach the derived quota state so the panel can show WHY a user-owned
+  // rule is not being served (paused vs quota-stopped are different states).
+  const userIds = [...new Set(rules.map((r) => r.user_id).filter((id): id is number => id !== undefined))];
+  const decisions = await quotaDecisionsForUsers(db, userIds);
+  for (const rule of rules) {
+    if (rule.user_id === undefined) continue;
+    const decision = decisions.get(rule.user_id);
+    if (decision?.stopped) {
+      rule.quota_stopped = true;
+      rule.quota_reason = decision.reason;
+    }
+  }
   return c.json({ rules });
 });
 
@@ -423,6 +541,10 @@ adminRoutes.post("/rules", async (c) => {
     return c.json({ error: "invalid rule payload", detail: parsed.error.flatten() }, 400);
   }
   const input = parsed.data;
+  if (input.user_id) {
+    const problem = await validateRuleOwnership(createDb(c.env.DB), input.user_id, input.tunnel_id ?? null);
+    if (problem) return c.json({ error: problem }, 400);
+  }
   const ts = now();
   const [rule] = await createDb(c.env.DB)
     .insert(relayRules)
@@ -431,6 +553,7 @@ adminRoutes.post("/rules", async (c) => {
       description: input.description ?? null,
       listen_port: input.listen_port,
       tunnel_id: input.tunnel_id ?? null,
+      user_id: input.user_id ?? null,
       targets: input.targets,
       status: input.status,
       limit: input.limit ?? null,
@@ -441,6 +564,7 @@ adminRoutes.post("/rules", async (c) => {
   if (input.tunnel_id) {
     await recomputeTunnelNodes(c.env, input.tunnel_id);
   }
+  await recordAudit(c.env, { action: "rule.create", targetType: "rule", targetId: rule.id, detail: rule.name });
   return c.json({ rule: toRelayRule(rule) }, 201);
 });
 
@@ -452,7 +576,7 @@ adminRoutes.put("/rules/:id", async (c) => {
   }
   const db = createDb(c.env.DB);
   const existing = await db
-    .select({ tunnel_id: relayRules.tunnel_id })
+    .select({ tunnel_id: relayRules.tunnel_id, user_id: relayRules.user_id })
     .from(relayRules)
     .where(eq(relayRules.id, id))
     .get();
@@ -461,11 +585,19 @@ adminRoutes.put("/rules/:id", async (c) => {
   }
 
   const input = parsed.data;
+  const finalUserId = input.user_id !== undefined ? input.user_id : existing.user_id;
+  const finalTunnelId = input.tunnel_id !== undefined ? input.tunnel_id : existing.tunnel_id;
+  if (finalUserId) {
+    const problem = await validateRuleOwnership(db, finalUserId, finalTunnelId ?? null, id);
+    if (problem) return c.json({ error: problem }, 400);
+  }
+
   const patch: Partial<typeof relayRules.$inferInsert> = {};
   if (input.name !== undefined) patch.name = input.name;
   if (input.description !== undefined) patch.description = input.description;
   if (input.listen_port !== undefined) patch.listen_port = input.listen_port;
   if (input.tunnel_id !== undefined) patch.tunnel_id = input.tunnel_id;
+  if (input.user_id !== undefined) patch.user_id = input.user_id;
   if (input.targets !== undefined) patch.targets = input.targets;
   if (input.status !== undefined) patch.status = input.status;
   if (input.limit !== undefined) patch.limit = input.limit;
@@ -482,6 +614,7 @@ adminRoutes.put("/rules/:id", async (c) => {
   for (const tunnelId of affected) {
     await recomputeTunnelNodes(c.env, tunnelId);
   }
+  await recordAudit(c.env, { action: "rule.update", targetType: "rule", targetId: id, detail: input.name ?? "" });
 
   const [row] = await db.select().from(relayRules).where(eq(relayRules.id, id));
   return c.json({ rule: row ? toRelayRule(row) : null });
@@ -502,5 +635,301 @@ adminRoutes.delete("/rules/:id", async (c) => {
   if (existing.tunnel_id) {
     await recomputeTunnelNodes(c.env, existing.tunnel_id);
   }
+  await recordAudit(c.env, { action: "rule.delete", targetType: "rule", targetId: id });
+  return c.json({ ok: true });
+});
+
+/**
+ * Manual rule restart (C2): a PURE restart, not a state transition. Broadcasts
+ * a restart_service directive to every node of the rule's tunnel; the entry
+ * node holding service-{id} rebuilds it from its last applied config (dropping
+ * live connections), other nodes no-op. A rule without a tunnel is not
+ * deployed anywhere — nothing to restart.
+ */
+adminRoutes.post("/rules/:id/restart", async (c) => {
+  const id = Number(c.req.param("id"));
+  const db = createDb(c.env.DB);
+  const rule = await db
+    .select({ name: relayRules.name, tunnel_id: relayRules.tunnel_id })
+    .from(relayRules)
+    .where(eq(relayRules.id, id))
+    .get();
+  if (!rule) return c.json({ error: "rule not found" }, 404);
+  if (rule.tunnel_id === null) return c.json({ error: "rule is not deployed on any tunnel" }, 400);
+
+  const rows = await db
+    .selectDistinct({ node_id: chains.node_id })
+    .from(chains)
+    .where(eq(chains.tunnel_id, rule.tunnel_id));
+  const nodeIds = rows.map((r) => r.node_id);
+  await broadcastNodeMessage(c.env, nodeIds, { type: "restart_service", service: `service-${id}` });
+  await recordAudit(c.env, { action: "rule.restart", targetType: "rule", targetId: id, detail: rule.name });
+  return c.json({ ok: true, nodes: nodeIds.length });
+});
+
+// ---- Users (tenants) ----
+
+function toUser(row: typeof users.$inferSelect): User {
+  return { ...row, note: row.note ?? undefined };
+}
+
+function toPackage(row: typeof packages.$inferSelect): Package {
+  return {
+    ...row,
+    note: row.note ?? undefined,
+    node_ids: row.node_ids ?? null,
+    tunnel_ids: row.tunnel_ids ?? null,
+  };
+}
+
+adminRoutes.get("/users", async (c) => {
+  const db = createDb(c.env.DB);
+  const rows = await db.select().from(users).orderBy(users.id);
+  const subs = await getActiveSubscriptions(
+    db,
+    rows.map((r) => r.id),
+  );
+  return c.json({
+    users: rows.map((row) => {
+      const sub = subs.get(row.id);
+      return {
+        ...toUser(row),
+        subscription: sub ? { package_id: sub.pkg.id, package_name: sub.pkg.name, expired: sub.expired } : null,
+      };
+    }),
+  });
+});
+
+adminRoutes.post("/users", async (c) => {
+  const parsed = createUserSchema.safeParse(await readJson(c));
+  if (!parsed.success) {
+    return c.json({ error: "invalid user payload", detail: parsed.error.flatten() }, 400);
+  }
+  const ts = now();
+  const [row] = await createDb(c.env.DB)
+    .insert(users)
+    .values({
+      name: parsed.data.name,
+      note: parsed.data.note ?? null,
+      status: parsed.data.status,
+      created_at: ts,
+      updated_at: ts,
+    })
+    .returning();
+  await recordAudit(c.env, { action: "user.create", targetType: "user", targetId: row.id, detail: row.name });
+  return c.json({ user: toUser(row) }, 201);
+});
+
+/** User detail incl. its rules' quota status (used/remaining/stopped reasons). */
+adminRoutes.get("/users/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const db = createDb(c.env.DB);
+  const row = await db.select().from(users).where(eq(users.id, id)).get();
+  if (!row) return c.json({ error: "user not found" }, 404);
+  const owned = await db.select().from(relayRules).where(eq(relayRules.user_id, id));
+  const summary = await userQuotaSummary(db, toUser(row), owned.map(toRelayRule));
+  return c.json({ user: toUser(row), ...summary });
+});
+
+adminRoutes.put("/users/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const parsed = updateUserSchema.safeParse(await readJson(c));
+  if (!parsed.success) {
+    return c.json({ error: "invalid user payload", detail: parsed.error.flatten() }, 400);
+  }
+  const input = parsed.data;
+  const patch: Partial<typeof users.$inferInsert> = {};
+  if (input.name !== undefined) patch.name = input.name;
+  if (input.note !== undefined) patch.note = input.note;
+  if (input.status !== undefined) patch.status = input.status;
+  if (Object.keys(patch).length === 0) {
+    return c.json({ error: "no fields to update" }, 400);
+  }
+  patch.updated_at = now();
+
+  const updated = await createDb(c.env.DB).update(users).set(patch).where(eq(users.id, id)).returning();
+  if (updated.length === 0) {
+    return c.json({ error: "user not found" }, 404);
+  }
+  if (input.status !== undefined) {
+    // Disabling/reactivating changes whether the user's rules are served.
+    await recomputeUserNodes(c.env, id);
+  }
+  await recordAudit(c.env, {
+    action: "user.update",
+    targetType: "user",
+    targetId: id,
+    detail: input.status !== undefined ? `status=${input.status}` : (input.name ?? ""),
+  });
+  return c.json({ user: toUser(updated[0]) });
+});
+
+adminRoutes.delete("/users/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const db = createDb(c.env.DB);
+  // Collect affected tunnels BEFORE the delete: the FK then sets rules.user_id
+  // to NULL (rules become admin-managed), so they can no longer be found via
+  // the user — the affected nodes must drop their quota objects.
+  const tunnelsOf = await db
+    .selectDistinct({ tunnel_id: relayRules.tunnel_id })
+    .from(relayRules)
+    .where(eq(relayRules.user_id, id));
+  const deleted = await db.delete(users).where(eq(users.id, id)).returning({ id: users.id });
+  if (deleted.length === 0) {
+    return c.json({ error: "user not found" }, 404);
+  }
+  for (const { tunnel_id } of tunnelsOf) {
+    if (tunnel_id !== null) {
+      await recomputeTunnelNodes(c.env, tunnel_id);
+    }
+  }
+  await recordAudit(c.env, { action: "user.delete", targetType: "user", targetId: id });
+  return c.json({ ok: true });
+});
+
+/**
+ * Activate/switch/renew a user's subscription (换购/续费). Replaces the row
+ * with a fresh activated_at: the usage window restarts, so historically used
+ * traffic clears on the ledger AND on the agent-side quota counter.
+ */
+adminRoutes.post("/users/:id/subscribe", async (c) => {
+  const userId = Number(c.req.param("id"));
+  const parsed = subscribeSchema.safeParse(await readJson(c));
+  if (!parsed.success) {
+    return c.json({ error: "invalid subscribe payload", detail: parsed.error.flatten() }, 400);
+  }
+  const db = createDb(c.env.DB);
+  const user = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).get();
+  if (!user) return c.json({ error: "user not found" }, 404);
+  const pkg = await db.select().from(packages).where(eq(packages.id, parsed.data.package_id)).get();
+  if (!pkg) return c.json({ error: "package not found" }, 404);
+
+  const ts = now();
+  const expiresAt =
+    pkg.period_days > 0 ? new Date(Date.now() + pkg.period_days * 24 * 60 * 60 * 1000).toISOString() : null;
+  const [sub] = await db
+    .insert(userPackages)
+    .values({
+      user_id: userId,
+      package_id: pkg.id,
+      package_name: pkg.name, // snapshot frozen at subscribe time
+      traffic_bytes: pkg.traffic_bytes,
+      activated_at: ts,
+      expires_at: expiresAt,
+      created_at: ts,
+      updated_at: ts,
+    })
+    .onConflictDoUpdate({
+      target: userPackages.user_id,
+      set: {
+        package_id: pkg.id,
+        package_name: pkg.name,
+        traffic_bytes: pkg.traffic_bytes,
+        activated_at: ts,
+        expires_at: expiresAt,
+        updated_at: ts,
+      },
+    })
+    .returning();
+
+  await recomputeUserNodes(c.env, userId);
+  await recordAudit(c.env, {
+    action: "subscribe",
+    targetType: "user",
+    targetId: userId,
+    detail: `package ${pkg.name} (#${pkg.id}), expires ${expiresAt ?? "never"}`,
+  });
+  const subscription: UserSubscription = { ...sub, expires_at: sub.expires_at ?? null };
+  return c.json({ subscription });
+});
+
+// ---- Packages (plans) ----
+
+/** Admin audit trail, newest first. */
+adminRoutes.get("/audit", async (c) => {
+  const limit = Math.min(Number(c.req.query("limit") ?? 100), 500);
+  return c.json({ rows: await listAudit(c.env, limit) });
+});
+
+adminRoutes.get("/packages", async (c) => {
+  const rows = await createDb(c.env.DB).select().from(packages).orderBy(packages.id);
+  return c.json({ packages: rows.map(toPackage) });
+});
+
+adminRoutes.post("/packages", async (c) => {
+  const parsed = createPackageSchema.safeParse(await readJson(c));
+  if (!parsed.success) {
+    return c.json({ error: "invalid package payload", detail: parsed.error.flatten() }, 400);
+  }
+  const input = parsed.data;
+  const ts = now();
+  const [row] = await createDb(c.env.DB)
+    .insert(packages)
+    .values({
+      name: input.name,
+      note: input.note ?? null,
+      traffic_bytes: input.traffic_bytes,
+      period_days: input.period_days,
+      node_ids: input.node_ids ?? null,
+      tunnel_ids: input.tunnel_ids ?? null,
+      max_rules: input.max_rules,
+      created_at: ts,
+      updated_at: ts,
+    })
+    .returning();
+  await recordAudit(c.env, { action: "package.create", targetType: "package", targetId: row.id, detail: row.name });
+  return c.json({ package: toPackage(row) }, 201);
+});
+
+adminRoutes.put("/packages/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const parsed = updatePackageSchema.safeParse(await readJson(c));
+  if (!parsed.success) {
+    return c.json({ error: "invalid package payload", detail: parsed.error.flatten() }, 400);
+  }
+  const input = parsed.data;
+  const patch: Partial<typeof packages.$inferInsert> = {};
+  if (input.name !== undefined) patch.name = input.name;
+  if (input.note !== undefined) patch.note = input.note;
+  if (input.traffic_bytes !== undefined) patch.traffic_bytes = input.traffic_bytes;
+  if (input.period_days !== undefined) patch.period_days = input.period_days;
+  if (input.node_ids !== undefined) patch.node_ids = input.node_ids;
+  if (input.tunnel_ids !== undefined) patch.tunnel_ids = input.tunnel_ids;
+  if (input.max_rules !== undefined) patch.max_rules = input.max_rules;
+  if (Object.keys(patch).length === 0) {
+    return c.json({ error: "no fields to update" }, 400);
+  }
+  patch.updated_at = now();
+
+  const db = createDb(c.env.DB);
+  const updated = await db.update(packages).set(patch).where(eq(packages.id, id)).returning();
+  if (updated.length === 0) {
+    return c.json({ error: "package not found" }, 404);
+  }
+
+  // Allowance/access changes propagate to every subscriber's nodes.
+  const subs = await db
+    .selectDistinct({ user_id: userPackages.user_id })
+    .from(userPackages)
+    .where(eq(userPackages.package_id, id));
+  for (const { user_id } of subs) {
+    await recomputeUserNodes(c.env, user_id);
+  }
+  await recordAudit(c.env, { action: "package.update", targetType: "package", targetId: id, detail: updated[0].name });
+  return c.json({ package: toPackage(updated[0]) });
+});
+
+adminRoutes.delete("/packages/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const db = createDb(c.env.DB);
+  const subs = await db.select({ id: userPackages.id }).from(userPackages).where(eq(userPackages.package_id, id));
+  if (subs.length > 0) {
+    return c.json({ error: "package is in use by an active subscription" }, 409);
+  }
+  const deleted = await db.delete(packages).where(eq(packages.id, id)).returning({ id: packages.id });
+  if (deleted.length === 0) {
+    return c.json({ error: "package not found" }, 404);
+  }
+  await recordAudit(c.env, { action: "package.delete", targetType: "package", targetId: id });
   return c.json({ ok: true });
 });

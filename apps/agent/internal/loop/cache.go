@@ -27,15 +27,28 @@ func loadConfigCache(path string) (*model.AgentConfigResponse, error) {
 	return &cached, nil
 }
 
-// saveConfigCache atomically persists the config (write temp + rename) so a
-// crash mid-write can never leave a truncated file behind.
+// saveConfigCache atomically persists the config (write temp + fsync +
+// rename) so a crash or power loss mid-write can never leave a truncated or
+// empty file behind.
 func saveConfigCache(path string, resp *model.AgentConfigResponse) error {
 	raw, err := json.Marshal(resp)
 	if err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(raw); err != nil {
+		f.Close() //nolint:errcheck
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close() //nolint:errcheck
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

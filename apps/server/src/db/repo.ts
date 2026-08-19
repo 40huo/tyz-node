@@ -1,5 +1,6 @@
 import type { Chain, NodeConfigData, RelayNode, RelayRule, TlsConfig, Tunnel } from "@tyz/shared";
 import { eq, inArray, sql } from "drizzle-orm";
+import { applyRuleQuotas } from "../services/quota";
 import type { Database } from "./index";
 import { chains, nodeConfigs, relayNodes, relayRules, tunnels } from "./schema";
 
@@ -41,6 +42,7 @@ export function toRelayRule(row: RuleRow): RelayRule {
     ...row,
     description: opt(row.description),
     tunnel_id: opt(row.tunnel_id),
+    user_id: opt(row.user_id),
     limit: opt(row.limit),
   };
 }
@@ -65,6 +67,7 @@ export const nodeEntityColumns = {
   ingress_traffic: relayNodes.ingress_traffic,
   traffic_limit: relayNodes.traffic_limit,
   enlarge_scale: relayNodes.enlarge_scale,
+  rate: relayNodes.rate,
   ports: relayNodes.ports,
   custom_cfg: relayNodes.custom_cfg,
   created_at: relayNodes.created_at,
@@ -158,6 +161,8 @@ export async function deleteNodeConfigSnapshot(db: Database, nodeId: number): Pr
  * Build the NodeConfigData for one node:
  * node -> chains touching this node -> tunnels -> rules attached to those tunnels
  *         + every chain of those tunnels (the full relay path), ordered by index.
+ * Rules owned by tenants are quota-filtered/enriched (see services/quota.ts):
+ * hard-stopped rules drop out of the payload entirely.
  */
 export async function aggregateNodeConfig(db: Database, nodeId: number): Promise<NodeConfigData | null> {
   const node = await getNode(db, nodeId);
@@ -166,7 +171,7 @@ export async function aggregateNodeConfig(db: Database, nodeId: number): Promise
   const nodeChains = await getChainsForNode(db, nodeId);
   const tunnelIds = [...new Set(nodeChains.map((c) => c.tunnel_id))];
   const tunnelsOf = await getTunnelsByIds(db, tunnelIds);
-  const rules = await getRulesForTunnels(db, tunnelIds);
+  const rules = await applyRuleQuotas(db, await getRulesForTunnels(db, tunnelIds));
   const allChains = await getChainsForTunnels(db, tunnelIds);
   // Node records for every node the chains reference, so agents can resolve
   // dial addresses per hop (each chain row's node_id -> address + port range).
@@ -183,14 +188,30 @@ export async function aggregateNodeConfig(db: Database, nodeId: number): Promise
   return config;
 }
 
-/** Recompute and persist the config snapshot for a node. */
-export async function recomputeNodeConfig(db: Database, nodeId: number): Promise<boolean> {
+export interface RecomputeResult {
+  /** false when the node does not exist (snapshot deleted). */
+  ok: boolean;
+  /** false when the recomputed content is identical — version is NOT bumped. */
+  changed: boolean;
+}
+
+/**
+ * Recompute and persist the config snapshot for a node. An unchanged config
+ * skips the version bump entirely, so periodic sweeps (daily cron) cannot
+ * force every agent into a pointless full refetch.
+ */
+export async function recomputeNodeConfig(db: Database, nodeId: number): Promise<RecomputeResult> {
   const config = await aggregateNodeConfig(db, nodeId);
   const now = new Date().toISOString();
   if (!config) {
     await deleteNodeConfigSnapshot(db, nodeId);
-    return false;
+    return { ok: false, changed: false };
   }
-  await upsertNodeConfigSnapshot(db, nodeId, JSON.stringify(config), now);
-  return true;
+  const configJson = JSON.stringify(config);
+  const prev = await getNodeConfigSnapshot(db, nodeId);
+  if (prev && prev.configJson === configJson) {
+    return { ok: true, changed: false };
+  }
+  await upsertNodeConfigSnapshot(db, nodeId, configJson, now);
+  return { ok: true, changed: true };
 }

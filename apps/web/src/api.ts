@@ -1,18 +1,34 @@
 import type {
+  AdminRuleRow,
+  AuditRow,
   Chain,
   CreateChainInput,
   CreateNodeInput,
+  CreatePackageInput,
   CreateRuleInput,
   CreateTunnelInput,
+  CreateUserInput,
   NodeStatsRow,
   NodeWithMeta,
+  Package,
+  QuotaDecision,
   RelayRule,
+  RuleQuotaStatus,
+  ServiceHealthRow,
   Tunnel,
   UpdateChainInput,
   UpdateNodeInput,
+  UpdatePackageInput,
   UpdateRuleInput,
   UpdateTunnelInput,
+  UpdateUserInput,
+  User,
+  UserDetail,
+  UserListItem,
+  UserSubscription,
 } from "@tyz/shared";
+
+export type { AuditRow, QuotaDecision, RuleQuotaStatus, ServiceHealthRow, UserDetail, UserListItem };
 
 let onUnauthorized: () => void = () => {};
 export function setUnauthorizedHandler(handler: () => void) {
@@ -81,7 +97,7 @@ export const api = {
     }),
   deleteChain: (id: number) => request<{ ok: true }>(`/api/admin/chains/${id}`, { method: "DELETE" }),
 
-  listRules: () => request<{ rules: RelayRule[] }>("/api/admin/rules"),
+  listRules: () => request<{ rules: AdminRuleRow[] }>("/api/admin/rules"),
   createRule: (input: CreateRuleInput) => request<{ rule: RelayRule }>("/api/admin/rules", jsonBody(input)),
   updateRule: (id: number, input: UpdateRuleInput) =>
     request<{ rule: RelayRule }>(`/api/admin/rules/${id}`, {
@@ -89,4 +105,38 @@ export const api = {
       body: JSON.stringify(input),
     }),
   deleteRule: (id: number) => request<{ ok: true }>(`/api/admin/rules/${id}`, { method: "DELETE" }),
+  restartRule: (id: number) =>
+    request<{ ok: true; nodes: number }>(`/api/admin/rules/${id}/restart`, { method: "POST" }),
+
+  listUsers: () => request<{ users: UserListItem[] }>("/api/admin/users"),
+  createUser: (input: CreateUserInput) => request<{ user: User }>("/api/admin/users", jsonBody(input)),
+  updateUser: (id: number, input: UpdateUserInput) =>
+    request<{ user: User }>(`/api/admin/users/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+  deleteUser: (id: number) => request<{ ok: true }>(`/api/admin/users/${id}`, { method: "DELETE" }),
+  userDetail: (id: number) => request<UserDetail>(`/api/admin/users/${id}`),
+  subscribeUser: (id: number, packageId: number) =>
+    request<{ subscription: UserSubscription }>(
+      `/api/admin/users/${id}/subscribe`,
+      jsonBody({ package_id: packageId }),
+    ),
+
+  listPackages: () => request<{ packages: Package[] }>("/api/admin/packages"),
+  createPackage: (input: CreatePackageInput) => request<{ package: Package }>("/api/admin/packages", jsonBody(input)),
+  updatePackage: (id: number, input: UpdatePackageInput) =>
+    request<{ package: Package }>(`/api/admin/packages/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+  deletePackage: (id: number) => request<{ ok: true }>(`/api/admin/packages/${id}`, { method: "DELETE" }),
+
+  nodeHealth: (id: number) => request<{ rows: ServiceHealthRow[] }>(`/api/admin/nodes/${id}/health`),
+  nodeMetrics: (id: number, hours = 24) =>
+    request<{
+      rows: {
+        node_id: number;
+        service: string;
+        hour_ts: string;
+        samples: number;
+        conn_sum: number;
+        conn_max: number;
+      }[];
+    }>(`/api/admin/nodes/${id}/metrics?hours=${hours}`),
+  listAudit: (limit = 100) => request<{ rows: AuditRow[] }>(`/api/admin/audit?limit=${limit}`),
 };

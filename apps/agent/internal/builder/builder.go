@@ -160,6 +160,7 @@ func (b *cfgBuilder) chainAddr(chain *model.Chain) (string, error) {
 
 func (b *cfgBuilder) buildServices() error {
 	relayBuilt := map[int]bool{}
+	quotaBuilt := map[string]bool{}
 
 	for i := range b.data.Rules {
 		rule := &b.data.Rules[i]
@@ -193,6 +194,19 @@ func (b *cfgBuilder) buildServices() error {
 		// report traffic stats for the service.
 		svc.Metadata = map[string]any{"enableStats": "true"}
 		svc.Observer = ObserverName
+		// Traffic allowance: only the rule's own service enforces it (entry
+		// nodes and standalone forwards). Exit relay services are shared by
+		// every rule of the tunnel and never carry quotas — the `continue`
+		// path above skips this block on exit nodes. Several rules may share
+		// one quota name (per-user allowance): emit the object once, every
+		// service references it.
+		if quota := b.quotaFor(rule); quota != nil {
+			svc.Quotas = []string{quota.Name}
+			if !quotaBuilt[quota.Name] {
+				quotaBuilt[quota.Name] = true
+				b.config.Quotas = append(b.config.Quotas, quota)
+			}
+		}
 		b.config.Services = append(b.config.Services, svc)
 	}
 	return nil

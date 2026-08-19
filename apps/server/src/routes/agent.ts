@@ -1,10 +1,12 @@
 import { agentStatsBatchSchema } from "@tyz/shared";
+import { and, eq, notInArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { createDb } from "../db";
 import { getNodeConfigSnapshot, recomputeNodeConfig } from "../db/repo";
-import { gostStats } from "../db/schema";
+import { gostStats, serviceHealth } from "../db/schema";
 import type { Bindings, Variables } from "../env";
 import { nodeAuth } from "../middleware/nodeAuth";
+import { ingestTraffic } from "../services/traffic";
 
 export const agentRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -59,7 +61,7 @@ agentRoutes.get("/ws", (c) => {
   return stub.fetch(c.req.raw);
 });
 
-/** Batched stats upload from agents. */
+/** Batched stats upload from agents (samples and/or service health snapshot). */
 agentRoutes.post("/stats", async (c) => {
   const parsed = agentStatsBatchSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
@@ -68,18 +70,55 @@ agentRoutes.post("/stats", async (c) => {
 
   const nodeId = c.get("node").id;
   const reportedAt = new Date().toISOString();
+  const db = createDb(c.env.DB);
 
   if (parsed.data.samples.length > 0) {
-    await createDb(c.env.DB)
-      .insert(gostStats)
+    await db.insert(gostStats).values(
+      parsed.data.samples.map((sample) => ({
+        node_id: nodeId,
+        service: sample.service,
+        stats: sample,
+        reported_at: reportedAt,
+      })),
+    );
+    // Fold the samples into the hourly ledger (billing source of truth).
+    // Best effort: a failed ingest must not fail the stats upload.
+    await ingestTraffic(db, nodeId, parsed.data.samples).catch((err) =>
+      console.error("traffic ledger ingest failed", err),
+    );
+  }
+
+  // The health array is a full snapshot of the node's services: upsert every
+  // entry and drop rows for services no longer present (config removals).
+  if (parsed.data.health.length > 0) {
+    await db
+      .insert(serviceHealth)
       .values(
-        parsed.data.samples.map((sample) => ({
+        parsed.data.health.map((h) => ({
           node_id: nodeId,
-          service: sample.service,
-          stats: sample,
+          service: h.service,
+          state: h.state,
+          error: h.error ?? null,
           reported_at: reportedAt,
         })),
-      );
+      )
+      .onConflictDoUpdate({
+        target: [serviceHealth.node_id, serviceHealth.service],
+        set: {
+          state: sql`excluded.state`,
+          error: sql`excluded.error`,
+          reported_at: sql`excluded.reported_at`,
+        },
+      });
+    await db.delete(serviceHealth).where(
+      and(
+        eq(serviceHealth.node_id, nodeId),
+        notInArray(
+          serviceHealth.service,
+          parsed.data.health.map((h) => h.service),
+        ),
+      ),
+    );
   }
 
   return c.json({ ok: true, inserted: parsed.data.samples.length });

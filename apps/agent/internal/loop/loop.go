@@ -36,6 +36,9 @@ type Options struct {
 	// at startup (offline bootstrap); empty disables the cache.
 	CachePath string
 	Apply     ApplyConfig
+	// Health optionally returns the runtime state of every managed service;
+	// the full snapshot rides along with each stats flush. Nil disables it.
+	Health func() []model.ServiceHealthSample
 }
 
 type Loop struct {
@@ -49,6 +52,10 @@ type Loop struct {
 	stats   []model.GostStatsSample
 
 	wakeCh chan struct{}
+
+	// lastHealth remembers the previously reported state per service so only
+	// transitions are logged (guards against log spam on every flush).
+	lastHealth map[string]string
 
 	// flushGate serializes flush attempts and keeps the in-flight slice logic simple.
 	flushMu sync.Mutex
@@ -86,6 +93,9 @@ func (l *Loop) Start(ctx context.Context) {
 	flushDone := make(chan struct{})
 	go func() {
 		defer close(flushDone)
+		// Random startup phase: a fleet started together would otherwise flush
+		// in lockstep and hit the stats endpoint in waves every interval.
+		time.Sleep(jitter(l.opts.StatsFlushInterval))
 		ticker := time.NewTicker(l.opts.StatsFlushInterval)
 		defer ticker.Stop()
 		for {
@@ -101,6 +111,12 @@ func (l *Loop) Start(ctx context.Context) {
 	}()
 
 	l.pollLoop(ctx)
+
+	if l.opts.Ws != nil {
+		// Sends the close frame and stops the reconnect/heartbeat timers so
+		// no dial slips in during the shutdown window.
+		l.opts.Ws.Stop()
+	}
 
 	// Best-effort final upload of anything still buffered.
 	flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -213,18 +229,24 @@ func (l *Loop) pollOnce(ctx context.Context) error {
 
 func (l *Loop) flushStats(ctx context.Context) error {
 	l.statsMu.Lock()
-	if len(l.stats) == 0 {
-		l.statsMu.Unlock()
-		return nil
-	}
 	samples := l.stats
 	l.statsMu.Unlock()
+
+	// The full health snapshot is uploaded on every flush so the server-side
+	// view is self-healing (removed services drop out of the next snapshot).
+	var health []model.ServiceHealthSample
+	if l.opts.Health != nil {
+		health = l.opts.Health()
+	}
+	if len(samples) == 0 && len(health) == 0 {
+		return nil
+	}
 
 	// Upload outside the buffer lock; concurrent flushes serialize here.
 	l.flushMu.Lock()
 	defer l.flushMu.Unlock()
 
-	if err := l.client.UploadStats(ctx, samples); err != nil {
+	if err := l.client.UploadStats(ctx, samples, health); err != nil {
 		return err
 	}
 
@@ -236,8 +258,28 @@ func (l *Loop) flushStats(ctx context.Context) error {
 		l.stats = nil
 	}
 	l.statsMu.Unlock()
-	l.log.Debug("Stats uploaded", "count", len(samples))
+	l.noteHealth(health)
+	l.log.Debug("Stats uploaded", "count", len(samples), "health", len(health))
 	return nil
+}
+
+// noteHealth logs service state transitions (the upload itself carries every
+// service; only failed→X and X→failed are worth local log lines).
+func (l *Loop) noteHealth(health []model.ServiceHealthSample) {
+	next := make(map[string]string, len(health))
+	for _, h := range health {
+		next[h.Service] = h.State
+		prev, seen := l.lastHealth[h.Service]
+		switch {
+		case h.State == "failed":
+			if !seen || prev != "failed" {
+				l.log.Warn("Service unhealthy", "service", h.Service, "state", h.State, "error", h.Error)
+			}
+		case seen && prev == "failed":
+			l.log.Info("Service recovered", "service", h.Service, "state", h.State)
+		}
+	}
+	l.lastHealth = next
 }
 
 func jitter(base time.Duration) time.Duration {

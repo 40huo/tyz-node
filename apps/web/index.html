@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:," />
     <title>TYZ 控制台</title>
+    <script>
+      // 在首帧之前应用持久化主题，避免暗色模式闪烁
+      (() => {
+        var stored = localStorage.getItem("tyz-theme");
+        var dark =
+          stored === "dark" ||
+          (stored === null && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

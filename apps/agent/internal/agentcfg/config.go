@@ -111,11 +111,18 @@ func envStr(name, fallback string) string {
 	return fallback
 }
 
+// envInt parses an integer env var. A set-but-malformed value is an ERROR,
+// not a silent fallback — a typo like POLL_INTERVAL_MS=1O000 (letter O) must
+// fail loudly at startup instead of quietly running at the default.
 func envInt(name string, fallback int) int {
-	if v := os.Getenv(name); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
 	}
-	return fallback
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid %s=%q: not an integer\n", name, v)
+		os.Exit(1)
+	}
+	return n
 }

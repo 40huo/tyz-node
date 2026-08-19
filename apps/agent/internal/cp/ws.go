@@ -53,6 +53,14 @@ type WsChannelEvents struct {
 	OnFallback func()
 	// WebSocket reconnected after a fallback period.
 	OnRecovered func()
+	// Every successful connection (first connect and every reconnect). Fired
+	// because a config change broadcast while the channel was down is lost —
+	// the DO only pushes to live sockets — so an immediate poll closes the
+	// gap instead of waiting out the safety-net interval.
+	OnConnected func()
+	// Manual rule restart directive: rebuild this one service from the last
+	// applied config, dropping its live connections.
+	OnRestartService func(service string)
 }
 
 // WsChannel is the config-push channel over a WebSocket to the control plane
@@ -204,6 +212,11 @@ func (c *WsChannel) connect() {
 	} else {
 		c.log.Info("Config push channel connected")
 	}
+	// Any (re)connection may have missed pushes while disconnected — the
+	// server broadcasts to live sockets only — so always trigger a poll.
+	if c.events.OnConnected != nil {
+		c.events.OnConnected()
+	}
 
 	c.readLoop(conn)
 }
@@ -232,15 +245,24 @@ func (c *WsChannel) handleMessage(data string) {
 		return
 	}
 	var parsed struct {
-		Type string `json:"type"`
+		Type    string `json:"type"`
+		Service string `json:"service"`
 	}
 	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
 		return
 	}
-	if parsed.Type == "config_changed" {
+	switch parsed.Type {
+	case "config_changed":
 		c.log.Debug("Config change push received")
 		if c.events.OnConfigChanged != nil {
 			c.events.OnConfigChanged()
+		}
+	case "restart_service":
+		if parsed.Service != "" {
+			c.log.Info("Restart directive received", "service", parsed.Service)
+			if c.events.OnRestartService != nil {
+				c.events.OnRestartService(parsed.Service)
+			}
 		}
 	}
 }

@@ -1,0 +1,370 @@
+import { Button, Chip, ProgressBar, Separator, Table, toast } from "@heroui/react";
+import { IconPlus } from "@tabler/icons-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type UserDetail, type UserListItem, UserStatus } from "@tyz/shared";
+import { type FormEvent, useState } from "react";
+import { api } from "../api";
+import { confirmDanger } from "../confirm";
+import {
+  emptyState,
+  FormModal,
+  FormShell,
+  fail,
+  Mono,
+  PageHeader,
+  PageShell,
+  RowButton,
+  SelectForm,
+  SubmitButton,
+  TableLoading,
+  TextForm,
+} from "../ui";
+import { formatBytes } from "./Packages";
+
+const STOP_REASONS: Record<string, string> = {
+  user_disabled: "用户已禁用",
+  no_subscription: "无有效订阅",
+  expired: "订阅已过期",
+  exhausted: "流量已耗尽",
+};
+
+function CreateUserDialog({ opened, onClose }: { opened: boolean; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState<string>();
+  const createMutation = useMutation({
+    mutationFn: () => api.createUser({ name, note: note || undefined, status: UserStatus.ACTIVE }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      onClose();
+      setName("");
+      setNote("");
+      setError(undefined);
+      toast.success("用户已创建");
+    },
+    onError: fail,
+  });
+
+  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!name.trim()) {
+      setError("请输入名称");
+      return;
+    }
+    setError(undefined);
+    createMutation.mutate();
+  };
+
+  return (
+    <FormModal title="新建用户" isOpen={opened} onClose={onClose}>
+      {opened && (
+        <FormShell onSubmit={onSubmit}>
+          <TextForm label="名称" placeholder="用户名" value={name} onChange={setName} error={error} />
+          <TextForm label="备注" placeholder="可选" value={note} onChange={setNote} />
+          <div className="flex justify-end gap-2">
+            <Button variant="tertiary" onPress={onClose}>
+              取消
+            </Button>
+            <SubmitButton isPending={createMutation.isPending}>创建</SubmitButton>
+          </div>
+        </FormShell>
+      )}
+    </FormModal>
+  );
+}
+
+function SubscribeDialog({
+  user,
+  opened,
+  onClose,
+}: {
+  user: UserListItem | null;
+  opened: boolean;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const packagesQuery = useQuery({ queryKey: ["packages"], queryFn: api.listPackages, enabled: opened });
+  const [packageId, setPackageId] = useState<string | null>(null);
+
+  const subscribeMutation = useMutation({
+    mutationFn: (pkgId: number) => api.subscribeUser(user!.id, pkgId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      queryClient.invalidateQueries({ queryKey: ["user-detail", user?.id] });
+      queryClient.invalidateQueries({ queryKey: ["rules"] });
+      onClose();
+      toast.success("订阅已生效");
+    },
+    onError: fail,
+  });
+
+  const currentPackageId = user?.subscription?.package_id;
+  const switching = currentPackageId !== undefined && packageId !== null && Number(packageId) !== currentPackageId;
+
+  return (
+    <FormModal title={`为「${user?.name}」订阅套餐`} isOpen={opened} onClose={onClose}>
+      {opened && (
+        <div className="flex flex-col gap-4">
+          <p className="text-muted">订阅 / 换购会开启新的计费窗口：历史用量清零，剩余额度按新套餐计算。</p>
+          <SelectForm
+            label="套餐"
+            placeholder="选择套餐"
+            options={(packagesQuery.data?.packages ?? []).map((p) => ({
+              value: String(p.id),
+              label: `${p.name}（${p.traffic_bytes > 0 ? formatBytes(p.traffic_bytes) : "不限量"} / ${p.period_days > 0 ? `${p.period_days} 天` : "永久"}）`,
+            }))}
+            value={packageId}
+            onChange={(v) => setPackageId((v as string | null) ?? null)}
+          />
+          {switching && <p className="text-sm text-warning">换购不同套餐：当前套餐的剩余流量与有效期将被替换。</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="tertiary" onPress={onClose}>
+              取消
+            </Button>
+            <SubmitButton isPending={subscribeMutation.isPending} isDisabled={packageId === null}>
+              确认订阅
+            </SubmitButton>
+          </div>
+        </div>
+      )}
+    </FormModal>
+  );
+}
+
+function UserDetailDialog({
+  userId,
+  opened,
+  onClose,
+}: {
+  userId: number | null;
+  opened: boolean;
+  onClose: () => void;
+}) {
+  const detailQuery = useQuery({
+    queryKey: ["user-detail", userId],
+    queryFn: () => api.userDetail(userId!),
+    enabled: opened && userId !== null,
+  });
+  const d: UserDetail | undefined = detailQuery.data;
+  const total = d?.subscription?.pkg.traffic_bytes ?? 0;
+  const remaining = d?.decision.quota?.limit_bytes ?? 0;
+
+  return (
+    <FormModal title={`用户详情 · ${d?.user.name ?? "…"}`} isOpen={opened} onClose={onClose} width="sm:max-w-lg">
+      {detailQuery.isLoading || !d ? (
+        <TableLoading />
+      ) : (
+        <div className="flex flex-col gap-5">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs text-muted">当前订阅</p>
+              {d.subscription ? (
+                <p className="mt-1 text-sm">
+                  {d.subscription.pkg.name}
+                  <Mono className="ml-2 text-muted">
+                    {d.subscription.pkg.traffic_bytes > 0 ? formatBytes(d.subscription.pkg.traffic_bytes) : "不限量"}
+                    {d.subscription.subscription.expires_at
+                      ? ` / 至 ${d.subscription.subscription.expires_at.slice(0, 10)}`
+                      : " / 永久"}
+                  </Mono>
+                </p>
+              ) : (
+                <Chip color="warning" variant="soft" size="sm" className="mt-1">
+                  <Chip.Label>无订阅</Chip.Label>
+                </Chip>
+              )}
+            </div>
+            <div>
+              <p className="text-xs text-muted">转发状态</p>
+              {d.decision.stopped ? (
+                <Chip color="danger" variant="soft" size="sm" className="mt-1">
+                  <Chip.Label>已停用（{STOP_REASONS[d.decision.reason ?? ""] ?? d.decision.reason}）</Chip.Label>
+                </Chip>
+              ) : (
+                <Chip color="success" variant="soft" size="sm" className="mt-1">
+                  <Chip.Label>正常</Chip.Label>
+                </Chip>
+              )}
+            </div>
+          </div>
+
+          {d.decision.quota && total > 0 && (
+            <div>
+              <div className="mb-1.5 flex items-center justify-between">
+                <p className="text-muted">共享流量额度（所有规则共用，按线路倍率计费）</p>
+                <Mono>{formatBytes(remaining)} 剩余</Mono>
+              </div>
+              <ProgressBar value={Math.min(100, (remaining / total) * 100)} color="success">
+                <ProgressBar.Track>
+                  <ProgressBar.Fill />
+                </ProgressBar.Track>
+              </ProgressBar>
+              <p className="mt-1.5 text-xs text-muted">
+                窗口 {d.decision.quota.starts_at.slice(0, 16).replace("T", " ")} 起
+                {d.decision.quota.expires_at ? `，至 ${d.decision.quota.expires_at.slice(0, 10)}` : "，永久有效"}
+              </p>
+            </div>
+          )}
+
+          <Separator />
+          <div>
+            <h3 className="mb-2 text-sm font-medium">规则用量（本订阅窗口）</h3>
+            {d.rules.length === 0 ? (
+              <p className="py-2 text-center text-sm text-muted">该用户暂无规则</p>
+            ) : (
+              <Table.ScrollContainer>
+                <Table className="min-w-[420px]">
+                  <Table.Content aria-label="规则用量">
+                    <Table.Header>
+                      <Table.Column id="rule" isRowHeader>
+                        规则
+                      </Table.Column>
+                      <Table.Column id="used" defaultWidth={140}>
+                        <span className="flex justify-end">已用（计费）</span>
+                      </Table.Column>
+                    </Table.Header>
+                    <Table.Body items={d.rules}>
+                      {(r) => (
+                        <Table.Row id={r.rule_id}>
+                          <Table.Cell>
+                            {r.rule_name} <Mono className="text-muted">#{r.rule_id}</Mono>
+                          </Table.Cell>
+                          <Table.Cell>
+                            <span className="flex justify-end">
+                              <Mono>{formatBytes(Math.max(r.used_bytes, 0))}</Mono>
+                            </span>
+                          </Table.Cell>
+                        </Table.Row>
+                      )}
+                    </Table.Body>
+                  </Table.Content>
+                </Table>
+              </Table.ScrollContainer>
+            )}
+          </div>
+        </div>
+      )}
+    </FormModal>
+  );
+}
+
+export default function UsersPage() {
+  const queryClient = useQueryClient();
+  const [creating, setCreating] = useState(false);
+  const [subscribing, setSubscribing] = useState<UserListItem | null>(null);
+  const [detailId, setDetailId] = useState<number | null>(null);
+
+  const usersQuery = useQuery({ queryKey: ["users"], queryFn: api.listUsers });
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["users"] });
+
+  const toggleMutation = useMutation({
+    mutationFn: (u: UserListItem) =>
+      api.updateUser(u.id, { status: u.status === "active" ? UserStatus.DISABLED : UserStatus.ACTIVE }),
+    onSuccess: invalidate,
+    onError: fail,
+  });
+  const deleteMutation = useMutation({ mutationFn: api.deleteUser, onSuccess: invalidate, onError: fail });
+
+  const users = usersQuery.data?.users ?? [];
+
+  return (
+    <PageShell>
+      <PageHeader
+        title="用户列表"
+        description="租户及其套餐订阅；配额与线路授权跟随订阅"
+        action={
+          <Button onPress={() => setCreating(true)}>
+            <IconPlus size={16} />
+            新建用户
+          </Button>
+        }
+      />
+      {usersQuery.isLoading ? (
+        <TableLoading />
+      ) : (
+        <Table.ScrollContainer>
+          <Table className="min-w-[760px]">
+            <Table.Content aria-label="用户列表">
+              <Table.Header>
+                <Table.Column id="id" defaultWidth={60} isRowHeader>
+                  ID
+                </Table.Column>
+                <Table.Column id="name">名称</Table.Column>
+                <Table.Column id="status" defaultWidth={100}>
+                  状态
+                </Table.Column>
+                <Table.Column id="subscription">订阅</Table.Column>
+                <Table.Column id="actions" defaultWidth={280}>
+                  <span className="flex justify-end">操作</span>
+                </Table.Column>
+              </Table.Header>
+              <Table.Body items={users} renderEmptyState={emptyState("暂无用户")}>
+                {(u) => (
+                  <Table.Row id={u.id}>
+                    <Table.Cell>
+                      <Mono>{u.id}</Mono>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <span className="font-medium">{u.name}</span>
+                    </Table.Cell>
+                    <Table.Cell>
+                      {u.status === "active" ? (
+                        <Chip color="success" variant="soft" size="sm">
+                          <Chip.Label>正常</Chip.Label>
+                        </Chip>
+                      ) : (
+                        <Chip variant="soft" size="sm">
+                          <Chip.Label>已禁用</Chip.Label>
+                        </Chip>
+                      )}
+                    </Table.Cell>
+                    <Table.Cell>
+                      {u.subscription ? (
+                        <span className="flex items-center gap-1.5 text-sm">
+                          {u.subscription.package_name}
+                          {u.subscription.expired && (
+                            <Chip color="danger" variant="soft" size="sm">
+                              <Chip.Label>已过期</Chip.Label>
+                            </Chip>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-muted">-</span>
+                      )}
+                    </Table.Cell>
+                    <Table.Cell>
+                      <div className="flex justify-end gap-1">
+                        <RowButton onPress={() => setDetailId(u.id)}>详情</RowButton>
+                        <RowButton onPress={() => setSubscribing(u)}>订阅</RowButton>
+                        <RowButton onPress={() => toggleMutation.mutate(u)}>
+                          {u.status === "active" ? "禁用" : "启用"}
+                        </RowButton>
+                        <RowButton
+                          danger
+                          onPress={() =>
+                            confirmDanger(
+                              "删除用户",
+                              "其名下规则将转为无主（不受配额限制），订阅一并删除，确定？",
+                              () => deleteMutation.mutate(u.id),
+                            )
+                          }
+                        >
+                          删除
+                        </RowButton>
+                      </div>
+                    </Table.Cell>
+                  </Table.Row>
+                )}
+              </Table.Body>
+            </Table.Content>
+          </Table>
+        </Table.ScrollContainer>
+      )}
+
+      <CreateUserDialog opened={creating} onClose={() => setCreating(false)} />
+      <SubscribeDialog user={subscribing} opened={subscribing !== null} onClose={() => setSubscribing(null)} />
+      <UserDetailDialog userId={detailId} opened={detailId !== null} onClose={() => setDetailId(null)} />
+    </PageShell>
+  );
+}

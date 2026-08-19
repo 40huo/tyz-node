@@ -1,7 +1,22 @@
 import { z } from "zod";
-import { type RelayNode, RelayRuleStatus } from "./entities";
+import {
+  type Package,
+  type RelayNode,
+  type RelayRule,
+  RelayRuleStatus,
+  type RuleQuota,
+  type User,
+  UserStatus,
+  type UserSubscription,
+} from "./entities";
 import type { GostStatsSample } from "./schemas";
-import { chainTypeSchema, limiterConfigSchema, relayRuleStatusSchema, transportSchema } from "./schemas";
+import {
+  chainTypeSchema,
+  limiterConfigSchema,
+  relayRuleStatusSchema,
+  transportSchema,
+  userStatusSchema,
+} from "./schemas";
 
 // ---- Admin auth ----
 
@@ -31,6 +46,7 @@ export const createNodeSchema = z.object({
     .default("10000-20000"),
   traffic_limit: z.number().int().nonnegative().default(0),
   enlarge_scale: z.number().int().nonnegative().default(1),
+  rate: z.number().min(0.1, "计费倍率范围 0.1-100").max(100, "计费倍率范围 0.1-100").default(1),
   custom_cfg: z.unknown().optional(),
   tls_config: tlsConfigInputSchema.optional(),
 });
@@ -84,12 +100,96 @@ export const createRuleSchema = z.object({
   listen_port: z.number().int().positive(),
   tunnel_id: z.number().int().positive().nullable().optional(),
   targets: z.string().min(1),
+  user_id: z.number().int().positive().nullable().optional(),
   status: relayRuleStatusSchema.default(RelayRuleStatus.CREATED),
   limit: limiterConfigSchema.nullable().optional(),
 });
 export const updateRuleSchema = createRuleSchema.partial();
 export type CreateRuleInput = z.infer<typeof createRuleSchema>;
 export type UpdateRuleInput = z.infer<typeof updateRuleSchema>;
+
+// ---- Users & packages ----
+
+export const createUserSchema = z.object({
+  name: z.string().min(1),
+  note: z.string().optional(),
+  status: userStatusSchema.default(UserStatus.ACTIVE),
+});
+export const updateUserSchema = createUserSchema.partial();
+export type CreateUserInput = z.infer<typeof createUserSchema>;
+export type UpdateUserInput = z.infer<typeof updateUserSchema>;
+
+const idList = z.array(z.number().int().positive()).nullable().optional();
+
+export const createPackageSchema = z.object({
+  name: z.string().min(1),
+  note: z.string().optional(),
+  traffic_bytes: z.number().int().nonnegative().default(0),
+  period_days: z.number().int().nonnegative().default(0),
+  node_ids: idList, // null/omitted = unrestricted node access
+  tunnel_ids: idList, // null/omitted = unrestricted tunnel access
+  max_rules: z.number().int().nonnegative().default(0),
+});
+export const updatePackageSchema = createPackageSchema.partial();
+export type CreatePackageInput = z.infer<typeof createPackageSchema>;
+export type UpdatePackageInput = z.infer<typeof updatePackageSchema>;
+
+export const subscribeSchema = z.object({
+  package_id: z.number().int().positive(),
+});
+export type SubscribeInput = z.infer<typeof subscribeSchema>;
+
+/** Rule row as listed by the admin panel, with the derived quota state of its owner. */
+export interface AdminRuleRow extends RelayRule {
+  /** True when the owner's allowance currently hard-stops this rule (excluded from node configs). */
+  quota_stopped?: boolean;
+  quota_reason?: "user_disabled" | "no_subscription" | "expired" | "exhausted";
+}
+
+// ---- Users & packages (API response shapes) ----
+
+export interface UserListItem extends User {
+  subscription: { package_id: number; package_name: string; expired: boolean } | null;
+}
+
+/** GET /users/:id response body. */
+export interface UserDetail {
+  user: User;
+  subscription: { subscription: UserSubscription; pkg: Package; expired: boolean } | null;
+  decision: QuotaDecision;
+  rules: RuleQuotaStatus[];
+}
+
+export interface QuotaDecision {
+  stopped: boolean;
+  reason?: "user_disabled" | "no_subscription" | "expired" | "exhausted";
+  /** Shared per-user quota; present only for metered, non-stopped owners. */
+  quota?: RuleQuota;
+}
+
+export interface RuleQuotaStatus {
+  rule_id: number;
+  rule_name: string;
+  used_bytes: number;
+}
+
+export interface ServiceHealthRow {
+  node_id: number;
+  service: string;
+  state: string;
+  error: string | null;
+  reported_at: string;
+}
+
+export interface AuditRow {
+  id: number;
+  ts: string;
+  actor: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  detail: string;
+}
 
 // ---- Stats ----
 

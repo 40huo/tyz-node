@@ -16,6 +16,10 @@ import (
 
 const httpTimeout = 30 * time.Second
 
+// maxConfigBytes caps the config response so a misbehaving control plane
+// cannot balloon the agent's memory.
+const maxConfigBytes = 8 << 20
+
 type Client struct {
 	baseURL string
 	token   string
@@ -45,6 +49,7 @@ func (c *Client) FetchConfig(ctx context.Context, version int64) (resp *model.Ag
 		return nil, false, err
 	}
 	defer httpResp.Body.Close()
+	httpResp.Body = http.MaxBytesReader(nil, httpResp.Body, maxConfigBytes)
 
 	switch {
 	case httpResp.StatusCode == http.StatusNotModified:
@@ -60,9 +65,13 @@ func (c *Client) FetchConfig(ctx context.Context, version int64) (resp *model.Ag
 	}
 }
 
-// UploadStats posts one batch of stats samples.
-func (c *Client) UploadStats(ctx context.Context, samples []model.GostStatsSample) error {
-	body, err := json.Marshal(map[string]any{"samples": samples})
+// UploadStats posts one batch of stats samples plus the current service
+// health snapshot. Either may be empty.
+func (c *Client) UploadStats(ctx context.Context, samples []model.GostStatsSample, health []model.ServiceHealthSample) error {
+	body, err := json.Marshal(struct {
+		Samples []model.GostStatsSample     `json:"samples"`
+		Health  []model.ServiceHealthSample `json:"health,omitempty"`
+	}{samples, health})
 	if err != nil {
 		return err
 	}

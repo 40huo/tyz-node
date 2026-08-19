@@ -84,6 +84,9 @@ func run() error {
 		// Offline bootstrap: the last applied config is re-applied at startup
 		// so tunnels survive a control-plane outage across agent restarts.
 		CachePath: configCachePath,
+		// Service health snapshot rides along with every stats flush; the
+		// control plane stores the latest state per service.
+		Health: applier.HealthSnapshot,
 		Apply: func(data *model.NodeConfigData) error {
 			gostConfig, err := builder.Build(data)
 			if err != nil {
@@ -116,6 +119,15 @@ func run() error {
 			OnConfigChanged: ctl.Wake,
 			OnFallback:      ctl.Wake,
 			OnRecovered:     ctl.Wake,
+			// A push may have been missed while (re)connecting — poll now.
+			OnConnected: ctl.Wake,
+			// Manual rule restart: a pure rebuild of one service from the
+			// last applied config (drops its live connections).
+			OnRestartService: func(service string) {
+				if err := applier.RestartService(service); err != nil {
+					log.Warn("Service restart failed", "service", service, "error", err)
+				}
+			},
 		}, log)
 		ctl.SetWSChannel(ws)
 	}

@@ -62,8 +62,27 @@ type RelayRule struct {
 	TunnelID   *int   `json:"tunnel_id"` // nil = not deployed anywhere
 	Targets    string `json:"targets"`
 	Status     string `json:"status"`
+	// Quota is the traffic allowance computed by the control plane; nil = none.
+	// (user_id is intentionally not modeled — the agent only consumes the
+	// derived quota, and legacy payloads carry it as a string.)
+	Quota *RuleQuota `json:"quota,omitempty"`
 	// Limit is kept raw: the stored value may be an object or a legacy JSON string.
 	Limit json.RawMessage `json:"limit,omitempty"`
+}
+
+// RuleQuota carries a traffic allowance shared by every rule referencing the
+// same quota name (GOST quotas with the same name share one counter — the
+// control plane emits per-user names). LimitBytes is the REMAINING allowance
+// at push time; the agent-side quota counter starts from zero when the object
+// is (re)created, so the effective gate is pre-push usage (server ledger) +
+// post-push usage (agent counter). StartsAt/ExpiresAt are RFC3339 and define
+// the billing window — a changed window resets the counter (换购清零). An
+// empty ExpiresAt means a permanent package.
+type RuleQuota struct {
+	Name       string `json:"name"`
+	LimitBytes uint64 `json:"limit_bytes"`
+	StartsAt   string `json:"starts_at"`
+	ExpiresAt  string `json:"expires_at,omitempty"`
 }
 
 // NodeConfigData is the aggregated payload for one relay node.
@@ -83,6 +102,14 @@ type NodeConfigData struct {
 type AgentConfigResponse struct {
 	Version int64          `json:"version"`
 	Config  NodeConfigData `json:"config"`
+}
+
+// ServiceHealthSample is the runtime state of one GOST service, uploaded
+// alongside stats batches (states mirror x/service.State: running|ready|failed|closed).
+type ServiceHealthSample struct {
+	Service string `json:"service"`
+	State   string `json:"state"`
+	Error   string `json:"error,omitempty"`
 }
 
 // GostStatsSample is one flattened observer sample uploaded in batches.

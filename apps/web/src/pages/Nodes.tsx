@@ -1,342 +1,429 @@
-import { zodResolver } from "@hookform/resolvers/zod";
+import { Button, Chip, Pagination, Switch, Table, Tooltip, toast } from "@heroui/react";
+import { IconCheck, IconCopy, IconPlus, IconRefresh, IconRotateClockwise } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { NodeWithMeta } from "@tyz/shared";
-import { Loader2, Plus } from "lucide-react";
-import { useState } from "react";
-import { useForm } from "react-hook-form";
-import { toast } from "sonner";
-import { z } from "zod";
-import { CopyButton } from "@/components/copy-button";
-import { NumberField } from "@/components/form-fields";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
+import type { CreateNodeInput, NodeWithMeta, UpdateNodeInput } from "@tyz/shared";
+import { type FormEvent, useState } from "react";
 import { api } from "../api";
-
-const fail = (error: unknown) => toast.error(error instanceof Error ? error.message : "操作失败");
+import { confirmDanger } from "../confirm";
+import {
+  emptyState,
+  type FormErrors,
+  FormModal,
+  FormShell,
+  fail,
+  hasErrors,
+  Mono,
+  NumberForm,
+  PageHeader,
+  PageShell,
+  RowButton,
+  SideDrawer,
+  SubmitButton,
+  TableLoading,
+  TextForm,
+  useFormValues,
+} from "../ui";
 
 // ---- Node form ----
 
-const nodeFormSchema = z.object({
-  name: z.string().min(1, "请输入名称"),
-  address: z.string().min(1, "请输入内网地址"),
-  display_address: z.string().optional(),
-  ports: z.string().regex(/^\d+-\d+$/, "格式如 10000-20000"),
-  level: z.number({ invalid_type_error: "请输入级别" }).int().min(0),
-  traffic_limit: z.number({ invalid_type_error: "请输入流量上限" }).int().min(0),
-  enlarge_scale: z.number({ invalid_type_error: "请输入扩容倍数" }).int().min(1, "最小为 1"),
-  is_public: z.boolean(),
-  description: z.string().optional(),
-});
+interface NodeFormValues {
+  name: string;
+  address: string;
+  display_address: string;
+  ports: string;
+  level: number;
+  traffic_limit: number;
+  enlarge_scale: number;
+  rate: number;
+  is_public: boolean;
+  description: string;
+}
 
-const CREATE_DEFAULTS = {
-  name: "",
-  address: "",
-  display_address: "",
-  ports: "10000-20000",
-  level: 0,
-  traffic_limit: 0,
-  enlarge_scale: 1,
-  is_public: false,
-  description: "",
-};
+function nodeFormValues(node: NodeWithMeta | null): NodeFormValues {
+  return node
+    ? {
+        name: node.name,
+        address: node.address,
+        display_address: node.display_address ?? "",
+        ports: node.ports,
+        level: node.level,
+        traffic_limit: node.traffic_limit,
+        enlarge_scale: node.enlarge_scale,
+        rate: node.rate,
+        is_public: node.is_public,
+        description: node.description ?? "",
+      }
+    : {
+        name: "",
+        address: "",
+        display_address: "",
+        ports: "10000-20000",
+        level: 0,
+        traffic_limit: 0,
+        enlarge_scale: 1,
+        rate: 1,
+        is_public: false,
+        description: "",
+      };
+}
 
 function NodeDialog({
   node,
-  open,
-  onOpenChange,
+  opened,
+  onClose,
   onCreated,
 }: {
   node: NodeWithMeta | null;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  opened: boolean;
+  onClose: () => void;
   onCreated: (token: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const form = useForm<z.infer<typeof nodeFormSchema>>({
-    resolver: zodResolver(nodeFormSchema),
-    defaultValues: node ?? CREATE_DEFAULTS,
-  });
-
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["nodes"] });
+
   const createMutation = useMutation({
-    mutationFn: api.createNode,
+    mutationFn: (input: CreateNodeInput) => api.createNode(input),
     onSuccess: (data) => {
       invalidate();
-      onOpenChange(false);
+      onClose();
       onCreated(data.token);
     },
     onError: fail,
   });
   const updateMutation = useMutation({
-    mutationFn: (values: z.infer<typeof nodeFormSchema>) => api.updateNode(node!.id, values),
+    mutationFn: (input: UpdateNodeInput) => api.updateNode(node!.id, input),
     onSuccess: () => {
       invalidate();
-      onOpenChange(false);
+      onClose();
     },
     onError: fail,
   });
 
-  const onSubmit = (values: z.infer<typeof nodeFormSchema>) => {
-    const payload = {
-      ...values,
+  return (
+    <FormModal title={node === null ? "新建节点" : `编辑节点 #${node.id}`} isOpen={opened} onClose={onClose}>
+      {opened && (
+        <NodeForm
+          key={node?.id ?? "create"}
+          node={node}
+          submitting={createMutation.isPending || updateMutation.isPending}
+          onCancel={onClose}
+          onSubmit={(input) => {
+            if (node === null) createMutation.mutate(input);
+            else updateMutation.mutate(input);
+          }}
+        />
+      )}
+    </FormModal>
+  );
+}
+
+function NodeForm({
+  node,
+  onSubmit,
+  submitting,
+  onCancel,
+}: {
+  node: NodeWithMeta | null;
+  onSubmit: (input: CreateNodeInput) => void;
+  submitting: boolean;
+  onCancel: () => void;
+}) {
+  const { values, set } = useFormValues(() => nodeFormValues(node));
+  const [errors, setErrors] = useState<FormErrors<NodeFormValues>>({});
+
+  const onSubmitForm = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const errs: FormErrors<NodeFormValues> = {};
+    if (!values.name.trim()) errs.name = "请输入名称";
+    if (!values.address.trim()) errs.address = "请输入内网地址";
+    if (!/^\d+-\d+$/.test(values.ports.trim())) errs.ports = "格式如 10000-20000";
+    setErrors(errs);
+    if (hasErrors(errs)) return;
+
+    onSubmit({
+      name: values.name,
+      address: values.address,
       display_address: values.display_address || undefined,
+      ports: values.ports,
+      level: values.level,
+      traffic_limit: values.traffic_limit,
+      enlarge_scale: values.enlarge_scale,
+      rate: values.rate,
+      is_public: values.is_public,
       description: values.description || undefined,
-    };
-    if (node === null) {
-      createMutation.mutate(payload);
-    } else {
-      updateMutation.mutate(payload);
-    }
+    });
   };
 
-  const pending = createMutation.isPending || updateMutation.isPending;
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{node === null ? "新建节点" : `编辑节点 #${node.id}`}</DialogTitle>
-        </DialogHeader>
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="grid gap-4">
-            <FormField
-              control={form.control}
-              name="name"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>名称</FormLabel>
-                  <FormControl>
-                    <Input {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="address"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>内网地址</FormLabel>
-                  <FormControl>
-                    <Input {...field} />
-                  </FormControl>
-                  <FormDescription>节点间通信地址，如 10.0.0.1</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="display_address"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>对外地址</FormLabel>
-                  <FormControl>
-                    <Input {...field} />
-                  </FormControl>
-                  <FormDescription>可选，客户端连接地址</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="ports"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>端口段</FormLabel>
-                  <FormControl>
-                    <Input {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <div className="grid grid-cols-3 gap-3">
-              <NumberField control={form.control} name="level" label="级别" min={0} />
-              <NumberField control={form.control} name="traffic_limit" label="流量上限" min={0} />
-              <NumberField control={form.control} name="enlarge_scale" label="扩容倍数" min={1} />
-            </div>
-            <FormField
-              control={form.control}
-              name="is_public"
-              render={({ field }) => (
-                <FormItem className="flex items-center justify-between rounded-lg border p-3">
-                  <FormLabel>公开节点</FormLabel>
-                  <FormControl>
-                    <Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
-                  </FormControl>
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name="description"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>描述</FormLabel>
-                  <FormControl>
-                    <Textarea rows={2} {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                取消
-              </Button>
-              <Button type="submit" disabled={pending}>
-                {pending ? <Loader2 className="size-4 animate-spin" /> : null}
-                保存
-              </Button>
-            </DialogFooter>
-          </form>
-        </Form>
-      </DialogContent>
-    </Dialog>
+    <FormShell onSubmit={onSubmitForm}>
+      <TextForm label="名称" isRequired value={values.name} onChange={(v) => set("name", v)} error={errors.name} />
+      <TextForm
+        label="内网地址"
+        isRequired
+        hint="节点间通信地址，如 10.0.0.1"
+        value={values.address}
+        onChange={(v) => set("address", v)}
+        error={errors.address}
+      />
+      <TextForm
+        label="对外地址"
+        hint="可选，客户端连接地址"
+        value={values.display_address}
+        onChange={(v) => set("display_address", v)}
+      />
+      <TextForm
+        label="端口段"
+        placeholder="10000-20000"
+        value={values.ports}
+        onChange={(v) => set("ports", v)}
+        error={errors.ports}
+      />
+      <div className="grid grid-cols-2 gap-3">
+        <NumberForm label="级别" minValue={0} value={values.level} onChange={(v) => set("level", v ?? 0)} />
+        <NumberForm
+          label="流量上限"
+          minValue={0}
+          value={values.traffic_limit}
+          onChange={(v) => set("traffic_limit", v ?? 0)}
+        />
+        <NumberForm
+          label="扩容倍数"
+          minValue={1}
+          value={values.enlarge_scale}
+          onChange={(v) => set("enlarge_scale", v ?? 1)}
+        />
+        <NumberForm
+          label="计费倍率"
+          minValue={0.1}
+          maxValue={100}
+          step={0.1}
+          hint="真实流量 × 倍率"
+          value={values.rate}
+          onChange={(v) => set("rate", v ?? 1)}
+        />
+      </div>
+      <Switch isSelected={values.is_public} onChange={(v) => set("is_public", v)}>
+        <Switch.Content>
+          <Switch.Control>
+            <Switch.Thumb />
+          </Switch.Control>
+          公开节点
+        </Switch.Content>
+      </Switch>
+      <TextForm
+        label="描述"
+        multiline
+        inputProps={{ rows: 2 }}
+        value={values.description}
+        onChange={(v) => set("description", v)}
+      />
+      <div className="flex justify-end gap-2">
+        <Button variant="tertiary" onPress={onCancel}>
+          取消
+        </Button>
+        <SubmitButton isPending={submitting}>保存</SubmitButton>
+      </div>
+    </FormShell>
   );
 }
 
-// ---- Token one-time display ----
+// ---- Token dialog ----
 
 function TokenDialog({ token, onClose }: { token: string | null; onClose: () => void }) {
+  // 记录“已复制的是哪个令牌”，令牌更换时自然回到未复制态
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
+
   return (
-    <Dialog open={token !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>节点 Token（仅显示一次）</DialogTitle>
-          <DialogDescription>请立即保存到节点 agent 的 NODE_TOKEN 环境变量，关闭后无法再次查看。</DialogDescription>
-        </DialogHeader>
-        <div className="rounded-md bg-muted p-3 font-mono text-sm break-all">{token}</div>
-        <DialogFooter>
-          <CopyButton text={token ?? ""} />
-          <Button onClick={onClose}>关闭</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <FormModal title="节点令牌" isOpen={token !== null} onClose={onClose}>
+      {token !== null && (
+        <>
+          <p className="text-sm text-warning">令牌仅此一次完整显示，请立即保存：</p>
+          <div className="mt-2 flex items-start gap-2">
+            <Mono className="flex-1 break-all text-sm leading-5">{token}</Mono>
+            <Button
+              isIconOnly
+              variant="tertiary"
+              size="sm"
+              aria-label="复制令牌"
+              onPress={() => {
+                navigator.clipboard.writeText(token).then(() => setCopiedToken(token));
+              }}
+            >
+              {copiedToken === token ? <IconCheck size={16} /> : <IconCopy size={16} />}
+            </Button>
+          </div>
+        </>
+      )}
+    </FormModal>
   );
 }
 
-// ---- Stats sheet ----
+// ---- Stats drawer ----
 
-const STATS_PAGE_SIZE = 20;
+const STATE_COLOR: Record<string, "success" | "default" | "danger"> = {
+  ready: "success",
+  running: "default",
+  failed: "danger",
+  closed: "default",
+  apply_failed: "danger",
+  unknown: "default",
+};
 
-function StatsSheet({ node, onClose }: { node: NodeWithMeta; onClose: () => void }) {
-  const [page, setPage] = useState(0);
+function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => void }) {
+  const [page, setPage] = useState(1);
   const statsQuery = useQuery({
     queryKey: ["node-stats", node.id],
     queryFn: () => api.nodeStats(node.id),
     refetchInterval: 10_000,
   });
+  const healthQuery = useQuery({
+    queryKey: ["node-health", node.id],
+    queryFn: () => api.nodeHealth(node.id),
+    refetchInterval: 10_000,
+  });
+  const metricsQuery = useQuery({ queryKey: ["node-metrics", node.id], queryFn: () => api.nodeMetrics(node.id, 24) });
 
-  const rows = statsQuery.data?.rows ?? [];
-  const pageCount = Math.max(1, Math.ceil(rows.length / STATS_PAGE_SIZE));
-  const currentPage = Math.min(page, pageCount - 1);
-  const pageRows = rows.slice(currentPage * STATS_PAGE_SIZE, (currentPage + 1) * STATS_PAGE_SIZE);
+  const health = healthQuery.data?.rows ?? [];
+  const unhealthy = health.filter((h) => h.state !== "ready");
+  const connStats = new Map<string, { avg: number; max: number }>();
+  for (const m of metricsQuery.data?.rows ?? []) {
+    const cur = connStats.get(m.service) ?? { avg: 0, max: 0 };
+    connStats.set(m.service, {
+      avg: cur.avg + m.conn_sum / Math.max(1, m.samples),
+      max: Math.max(cur.max, m.conn_max),
+    });
+  }
+
+  const stats = statsQuery.data?.rows ?? [];
+  const pageSize = 20;
+  const pageCount = Math.max(1, Math.ceil(stats.length / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const pageRows = stats.slice((safePage - 1) * pageSize, safePage * pageSize);
 
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="flex w-full flex-col gap-0 sm:max-w-2xl">
-        <SheetHeader>
-          <SheetTitle>节点统计 #{node.id}</SheetTitle>
-          <SheetDescription>{node.name} · 每 10 秒自动刷新</SheetDescription>
-        </SheetHeader>
-        <div className="flex-1 overflow-auto px-4 pb-4">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>服务</TableHead>
-                <TableHead>连接 (总/当前)</TableHead>
-                <TableHead>流量 (入/出)</TableHead>
-                <TableHead>错误</TableHead>
-                <TableHead>时间</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {statsQuery.isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
-                    加载中…
-                  </TableCell>
-                </TableRow>
-              ) : pageRows.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
-                    暂无统计数据
-                  </TableCell>
-                </TableRow>
-              ) : (
-                pageRows.map((row) => (
-                  <TableRow key={row.id}>
-                    <TableCell className="font-mono text-xs">{row.service}</TableCell>
-                    <TableCell>
-                      {row.stats.totalConns} / {row.stats.currentConns}
-                    </TableCell>
-                    <TableCell>
-                      {row.stats.inputBytes} / {row.stats.outputBytes} B
-                    </TableCell>
-                    <TableCell>{row.stats.totalErrs}</TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {row.reported_at.replace("T", " ").slice(0, 19)}
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-        <div className="flex items-center justify-end gap-2 border-t px-4 py-3 text-sm text-muted-foreground">
-          <Button variant="outline" size="sm" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>
-            上一页
-          </Button>
-          <span>
-            第 {currentPage + 1} / {pageCount} 页
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={currentPage >= pageCount - 1}
-            onClick={() => setPage(currentPage + 1)}
-          >
-            下一页
-          </Button>
-        </div>
-      </SheetContent>
-    </Sheet>
+    <SideDrawer title={`节点统计 #${node.id} · ${node.name}`} isOpen onClose={onClose}>
+      <div className="flex flex-col gap-6">
+        <section>
+          <h3 className="mb-2 text-sm font-medium">
+            服务健康
+            {health.length > 0 && (
+              <span className="ml-2 text-xs font-normal text-muted">
+                {health.length - unhealthy.length}/{health.length} 就绪
+                {unhealthy.length > 0 ? `，${unhealthy.length} 异常` : ""} · 10s 自动刷新
+              </span>
+            )}
+          </h3>
+          {healthQuery.isLoading ? (
+            <TableLoading />
+          ) : health.length === 0 ? (
+            <p className="py-4 text-sm text-muted">暂无健康数据（agent 未上报或节点空闲）</p>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {health.map((h) => {
+                const conn = connStats.get(h.service);
+                return (
+                  <div
+                    key={h.service}
+                    className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-1.5"
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Mono className="truncate">{h.service}</Mono>
+                      {conn && (
+                        <span className="shrink-0 text-xs text-muted">
+                          24h 峰值 {conn.max} · 均值 {conn.avg.toFixed(1)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {h.error && (
+                        <Tooltip delay={0}>
+                          <span className="max-w-[280px] truncate text-xs text-danger">{h.error}</span>
+                          <Tooltip.Content className="max-w-sm">
+                            <p>{h.error}</p>
+                          </Tooltip.Content>
+                        </Tooltip>
+                      )}
+                      <Chip color={STATE_COLOR[h.state] ?? "default"} variant="soft" size="sm">
+                        <Chip.Label>{h.state}</Chip.Label>
+                      </Chip>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section>
+          <h3 className="mb-2 text-sm font-medium">流量统计</h3>
+          <Table.ScrollContainer>
+            <Table className="min-w-[640px]">
+              <Table.Content aria-label="流量统计">
+                <Table.Header>
+                  <Table.Column id="service" isRowHeader>
+                    服务
+                  </Table.Column>
+                  <Table.Column id="conns">连接 (总/当前)</Table.Column>
+                  <Table.Column id="bytes">流量 (入/出)</Table.Column>
+                  <Table.Column id="errs">错误</Table.Column>
+                  <Table.Column id="time" defaultWidth={160}>
+                    时间
+                  </Table.Column>
+                </Table.Header>
+                <Table.Body items={pageRows} renderEmptyState={emptyState("暂无统计数据")}>
+                  {(row) => (
+                    <Table.Row id={row.id}>
+                      <Table.Cell>
+                        <Mono>{row.service}</Mono>
+                      </Table.Cell>
+                      <Table.Cell>
+                        {row.stats.totalConns} / {row.stats.currentConns}
+                      </Table.Cell>
+                      <Table.Cell>
+                        <Mono>
+                          {row.stats.inputBytes} / {row.stats.outputBytes} B
+                        </Mono>
+                      </Table.Cell>
+                      <Table.Cell>{row.stats.totalErrs}</Table.Cell>
+                      <Table.Cell>
+                        <Mono className="text-muted">{row.reported_at.replace("T", " ").slice(0, 19)}</Mono>
+                      </Table.Cell>
+                    </Table.Row>
+                  )}
+                </Table.Body>
+              </Table.Content>
+            </Table>
+          </Table.ScrollContainer>
+          {pageCount > 1 && (
+            <Pagination size="sm" className="mt-3 justify-center">
+              <Pagination.Content>
+                <Pagination.Item>
+                  <Pagination.Previous isDisabled={safePage === 1} onPress={() => setPage(safePage - 1)}>
+                    <Pagination.PreviousIcon />
+                  </Pagination.Previous>
+                </Pagination.Item>
+                {Array.from({ length: pageCount }, (_, i) => i + 1).map((p) => (
+                  <Pagination.Item key={p}>
+                    <Pagination.Link isActive={p === safePage} onPress={() => setPage(p)}>
+                      {p}
+                    </Pagination.Link>
+                  </Pagination.Item>
+                ))}
+                <Pagination.Item>
+                  <Pagination.Next isDisabled={safePage === pageCount} onPress={() => setPage(safePage + 1)}>
+                    <Pagination.NextIcon />
+                  </Pagination.Next>
+                </Pagination.Item>
+              </Pagination.Content>
+            </Pagination>
+          )}
+        </section>
+      </div>
+    </SideDrawer>
   );
 }
 
 // ---- Page ----
-
-const NODE_COLUMNS = 9;
 
 export default function NodesPage() {
   const queryClient = useQueryClient();
@@ -353,7 +440,7 @@ export default function NodesPage() {
     mutationFn: api.recomputeNode,
     onSuccess: () => {
       invalidate();
-      toast.success("已重新计算配置");
+      toast("已重新计算配置");
     },
     onError: fail,
   });
@@ -366,149 +453,126 @@ export default function NodesPage() {
   const nodes = nodesQuery.data?.nodes ?? [];
 
   return (
-    <div className="grid gap-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>节点列表</CardTitle>
-          <CardDescription>管理 GOST 中继节点及其接入配置</CardDescription>
-          <CardAction>
-            <Button onClick={() => setCreating(true)}>
-              <Plus />
-              新建节点
-            </Button>
-          </CardAction>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-12">ID</TableHead>
-                <TableHead>名称</TableHead>
-                <TableHead>地址</TableHead>
-                <TableHead>对外地址</TableHead>
-                <TableHead>端口段</TableHead>
-                <TableHead>公开</TableHead>
-                <TableHead>配置版本</TableHead>
-                <TableHead>Token 尾号</TableHead>
-                <TableHead className="text-right">操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {nodesQuery.isLoading ? (
-                <TableRow>
-                  <TableCell colSpan={NODE_COLUMNS} className="h-24 text-center text-muted-foreground">
-                    加载中…
-                  </TableCell>
-                </TableRow>
-              ) : nodes.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={NODE_COLUMNS} className="h-24 text-center text-muted-foreground">
-                    暂无数据，点击右上角「新建节点」开始
-                  </TableCell>
-                </TableRow>
-              ) : (
-                nodes.map((node) => (
-                  <TableRow key={node.id}>
-                    <TableCell className="font-mono">{node.id}</TableCell>
-                    <TableCell className="font-medium">{node.name}</TableCell>
-                    <TableCell className="font-mono text-xs">{node.address}</TableCell>
-                    <TableCell className="font-mono text-xs">{node.display_address || "-"}</TableCell>
-                    <TableCell className="font-mono text-xs">{node.ports}</TableCell>
-                    <TableCell>
-                      {node.is_public ? (
-                        <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" variant="secondary">
-                          公开
-                        </Badge>
+    <PageShell>
+      <PageHeader
+        title="节点列表"
+        description="管理 GOST 中继节点及其接入配置"
+        action={
+          <Button onPress={() => setCreating(true)}>
+            <IconPlus size={16} />
+            新建节点
+          </Button>
+        }
+      />
+      {nodesQuery.isLoading ? (
+        <TableLoading />
+      ) : (
+        <Table.ScrollContainer>
+          <Table className="min-w-[960px]">
+            <Table.Content aria-label="节点列表">
+              <Table.Header>
+                <Table.Column id="id" defaultWidth={60} isRowHeader>
+                  ID
+                </Table.Column>
+                <Table.Column id="name">名称</Table.Column>
+                <Table.Column id="address">地址</Table.Column>
+                <Table.Column id="display">对外地址</Table.Column>
+                <Table.Column id="ports" defaultWidth={130}>
+                  端口段
+                </Table.Column>
+                <Table.Column id="rate" defaultWidth={90}>
+                  计费倍率
+                </Table.Column>
+                <Table.Column id="version" defaultWidth={100}>
+                  配置版本
+                </Table.Column>
+                <Table.Column id="actions" defaultWidth={300}>
+                  <span className="flex justify-end">操作</span>
+                </Table.Column>
+              </Table.Header>
+              <Table.Body items={nodes} renderEmptyState={emptyState("暂无数据，点击「新建节点」开始")}>
+                {(n) => (
+                  <Table.Row id={n.id}>
+                    <Table.Cell>
+                      <Mono>{n.id}</Mono>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <span className="flex items-center gap-1.5 font-medium">
+                        {n.name}
+                        {n.is_public && (
+                          <Chip color="accent" variant="soft" size="sm">
+                            <Chip.Label>公开</Chip.Label>
+                          </Chip>
+                        )}
+                      </span>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <Mono>{n.address}</Mono>
+                    </Table.Cell>
+                    <Table.Cell>{n.display_address ?? <span className="text-muted">-</span>}</Table.Cell>
+                    <Table.Cell>
+                      <Mono>{n.ports}</Mono>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <Mono>{n.rate === 1 ? "1" : `${n.rate}×`}</Mono>
+                    </Table.Cell>
+                    <Table.Cell>
+                      {n.config_version === null ? (
+                        <span className="text-muted">-</span>
                       ) : (
-                        <Badge variant="outline">私有</Badge>
+                        <Mono>{n.config_version}</Mono>
                       )}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">{node.config_version ?? "-"}</TableCell>
-                    <TableCell className="font-mono text-xs">****{node.token_hint}</TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
-                        <Button variant="link" size="sm" className="h-auto p-0" onClick={() => setEditing(node)}>
-                          编辑
-                        </Button>
-                        <Button variant="link" size="sm" className="h-auto p-0" onClick={() => setStatsNode(node)}>
-                          统计
-                        </Button>
-                        <Button
-                          variant="link"
-                          size="sm"
-                          className="h-auto p-0"
-                          disabled={recomputeMutation.isPending}
-                          onClick={() => recomputeMutation.mutate(node.id)}
+                    </Table.Cell>
+                    <Table.Cell>
+                      <div className="flex justify-end gap-1">
+                        <RowButton onPress={() => setStatsNode(n)}>统计</RowButton>
+                        <RowButton onPress={() => setEditing(n)}>编辑</RowButton>
+                        <RowButton
+                          onPress={() =>
+                            confirmDanger("轮换令牌", "旧令牌立即失效，新令牌仅显示一次，确定？", () =>
+                              rotateMutation.mutate(n.id),
+                            )
+                          }
                         >
-                          重算配置
-                        </Button>
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button variant="link" size="sm" className="h-auto p-0">
-                              轮换 Token
-                            </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>轮换 Token</AlertDialogTitle>
-                              <AlertDialogDescription>轮换后旧 Token 立即失效，确定？</AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>取消</AlertDialogCancel>
-                              <AlertDialogAction onClick={() => rotateMutation.mutate(node.id)}>确定</AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button variant="link" size="sm" className="h-auto p-0 text-destructive">
-                              删除
-                            </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>删除节点</AlertDialogTitle>
-                              <AlertDialogDescription>删除节点会级联删除其链路，确定？</AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>取消</AlertDialogCancel>
-                              <AlertDialogAction
-                                className="bg-destructive text-white hover:bg-destructive/90"
-                                onClick={() => deleteMutation.mutate(node.id)}
-                              >
-                                删除
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
+                          <IconRotateClockwise size={14} stroke={1.7} />
+                          轮换
+                        </RowButton>
+                        <Tooltip delay={0}>
+                          <RowButton
+                            isIconOnly
+                            aria-label="重新计算配置"
+                            onPress={() => recomputeMutation.mutate(n.id)}
+                          >
+                            <IconRefresh size={15} stroke={1.7} />
+                          </RowButton>
+                          <Tooltip.Content>
+                            <p>重新计算配置</p>
+                          </Tooltip.Content>
+                        </Tooltip>
+                        <RowButton
+                          danger
+                          onPress={() =>
+                            confirmDanger("删除节点", "其链路将一并删除并触发相关节点重算，确定？", () =>
+                              deleteMutation.mutate(n.id),
+                            )
+                          }
+                        >
+                          删除
+                        </RowButton>
                       </div>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
+                    </Table.Cell>
+                  </Table.Row>
+                )}
+              </Table.Body>
+            </Table.Content>
           </Table>
-        </CardContent>
-      </Card>
+        </Table.ScrollContainer>
+      )}
 
-      <NodeDialog
-        key="create"
-        node={null}
-        open={creating}
-        onOpenChange={(o) => !o && setCreating(false)}
-        onCreated={setToken}
-      />
-      <NodeDialog
-        key={editing?.id ?? "edit"}
-        node={editing}
-        open={editing !== null}
-        onOpenChange={(o) => !o && setEditing(null)}
-        onCreated={setToken}
-      />
+      <NodeDialog node={null} opened={creating} onClose={() => setCreating(false)} onCreated={(t) => setToken(t)} />
+      <NodeDialog node={editing} opened={editing !== null} onClose={() => setEditing(null)} onCreated={() => {}} />
       <TokenDialog token={token} onClose={() => setToken(null)} />
-      {statsNode !== null ? (
-        <StatsSheet key={statsNode.id} node={statsNode} onClose={() => setStatsNode(null)} />
-      ) : null}
-    </div>
+      {statsNode !== null && <StatsDrawer key={statsNode.id} node={statsNode} onClose={() => setStatsNode(null)} />}
+    </PageShell>
   );
 }

@@ -82,6 +82,83 @@ func TestWsChannelFallbackAndRecovery(t *testing.T) {
 	}
 }
 
+// TestWsChannelReconnectWakesAfterGap pins the push-hole fix: a single
+// disconnect (far below the 3-in-60s demotion threshold) followed by a
+// reconnect must fire OnConnected — an immediate poll — because any
+// config_changed broadcast during the down window is lost.
+func TestWsChannelReconnectWakesAfterGap(t *testing.T) {
+	addr := "127.0.0.1:59126"
+	url := "ws://" + addr + "/api/agent/ws"
+
+	connected := make(chan struct{}, 4)
+	log := slog.New(slog.NewTextHandler(&discardWriter{}, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	channel := NewWsChannel(WsChannelOptions{
+		URL:           url,
+		NodeToken:     "test-token",
+		ProbeInterval: 300 * time.Millisecond,
+		PingInterval:  60 * time.Second, // no heartbeat interference
+	}, WsChannelEvents{
+		OnConnected: func() { connected <- struct{}{} },
+	}, log)
+	channel.Start()
+	defer channel.Stop()
+
+	// A minimal server whose live connection can be dropped on demand.
+	var connMu sync.Mutex
+	var active *websocket.Conn
+	upgrader := websocket.Upgrader{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		connMu.Lock()
+		active = conn
+		connMu.Unlock()
+		for { // hold the connection open
+			conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("listen %s: %v", addr, err)
+	}
+	server := &httptest.Server{Listener: listener, Config: &http.Server{Handler: mux}}
+	server.Start()
+	defer server.Close()
+
+	// First connect fires OnConnected.
+	select {
+	case <-connected:
+	case <-time.After(10 * time.Second):
+		t.Fatal("OnConnected never fired on first connect")
+	}
+
+	// Drop the connection once (no demotion). The channel reconnects with
+	// backoff, and the reconnect must fire OnConnected again.
+	connMu.Lock()
+	drop := active
+	connMu.Unlock()
+	if drop == nil {
+		t.Fatal("server never saw a connection")
+	}
+	drop.Close() //nolint:errcheck
+
+	select {
+	case <-connected:
+	case <-time.After(15 * time.Second):
+		t.Fatal("OnConnected never fired after reconnecting from a single drop")
+	}
+	if channel.Mode() != ModeWS {
+		t.Fatalf("mode = %s, want ws (single drop must not demote)", channel.Mode())
+	}
+}
+
 type discardWriter struct{}
 
 func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
@@ -141,6 +218,57 @@ func startWsServer(t *testing.T, addr string) *httptest.Server {
 	server := &httptest.Server{Listener: listener, Config: &http.Server{Handler: mux}}
 	server.Start()
 	return server
+}
+
+// TestWsChannelRestartDirective checks the restart_service control message
+// reaches OnRestartService with the service name.
+func TestWsChannelRestartDirective(t *testing.T) {
+	addr := "127.0.0.1:59127"
+	restarts := make(chan string, 2)
+	log := slog.New(slog.NewTextHandler(&discardWriter{}, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	upgrader := websocket.Upgrader{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"restart_service","service":"service-14"}`)) //nolint:errcheck
+		for {
+			conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := &httptest.Server{Listener: listener, Config: &http.Server{Handler: mux}}
+	server.Start()
+	defer server.Close()
+
+	channel := NewWsChannel(WsChannelOptions{
+		URL:          "ws://" + addr + "/api/agent/ws",
+		NodeToken:    "test-token",
+		PingInterval: 60 * time.Second,
+	}, WsChannelEvents{
+		OnRestartService: func(service string) { restarts <- service },
+	}, log)
+	channel.Start()
+	defer channel.Stop()
+
+	select {
+	case svc := <-restarts:
+		if svc != "service-14" {
+			t.Fatalf("service = %q, want service-14", svc)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("restart_service directive never arrived")
+	}
 }
 
 // TestWsURL checks the http→ws base URL conversion.

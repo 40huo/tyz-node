@@ -1,7 +1,7 @@
-import type { ChainType, GostStatsSample, LimiterConfig, TlsConfig, Transport } from "@tyz/shared";
-import { RelayRuleStatus } from "@tyz/shared";
+import type { ChainType, GostStatsSample, LimiterConfig, ServiceHealthSample, TlsConfig, Transport } from "@tyz/shared";
+import { RelayRuleStatus, UserStatus } from "@tyz/shared";
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
  * Drizzle schema mirroring migrations/0001_init.sql exactly.
@@ -31,6 +31,8 @@ export const relayNodes = sqliteTable("relay_nodes", {
   ingress_traffic: integer("ingress_traffic").notNull().default(0),
   traffic_limit: integer("traffic_limit").notNull().default(0),
   enlarge_scale: integer("enlarge_scale").notNull().default(1),
+  /** Traffic billing multiplier: users are charged round(real × rate). */
+  rate: real("rate").notNull().default(1.0),
   ports: text("ports").notNull().default("10000-20000"),
   custom_cfg: text("custom_cfg", { mode: "json" }).$type<unknown>(),
   tls_config: text("tls_config", { mode: "json" }).$type<TlsConfig>(),
@@ -78,6 +80,8 @@ export const relayRules = sqliteTable(
     description: text("description"),
     listen_port: integer("listen_port").notNull(),
     tunnel_id: integer("tunnel_id").references(() => tunnels.id, { onDelete: "set null" }),
+    /** Owning tenant; NULL = admin-managed rule (no quota enforcement). */
+    user_id: integer("user_id").references(() => users.id, { onDelete: "set null" }),
     targets: text("targets").notNull(),
     status: text("status").$type<RelayRuleStatus>().notNull().default(RelayRuleStatus.CREATED),
     limit: text("limit", { mode: "json" }).$type<LimiterConfig>(),
@@ -86,7 +90,7 @@ export const relayRules = sqliteTable(
     created_at: text("created_at").notNull().default(createdAt),
     updated_at: text("updated_at").notNull().default(createdAt),
   },
-  (table) => [index("idx_rules_tunnel").on(table.tunnel_id)],
+  (table) => [index("idx_rules_tunnel").on(table.tunnel_id), index("idx_rules_user").on(table.user_id)],
 );
 
 /** Materialized per-node config snapshot; agents poll this with a version number. */
@@ -111,4 +115,149 @@ export const gostStats = sqliteTable(
     reported_at: text("reported_at").notNull(),
   },
   (table) => [index("idx_stats_node_time").on(table.node_id, table.reported_at)],
+);
+
+/**
+ * Latest runtime state per (node, service), replaced wholesale on every stats
+ * flush — the agent's snapshot is authoritative, so rows for services that
+ * disappear from the config are deleted with the same request.
+ */
+export const serviceHealth = sqliteTable(
+  "service_health",
+  {
+    node_id: integer("node_id")
+      .notNull()
+      .references(() => relayNodes.id, { onDelete: "cascade" }),
+    service: text("service").notNull(),
+    state: text("state").$type<ServiceHealthSample["state"]>().notNull(),
+    error: text("error"),
+    reported_at: text("reported_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.node_id, table.service] })],
+);
+
+/** Tenant owning relay rules; quota and access rights come from the subscription. */
+export const users = sqliteTable("users", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  note: text("note"),
+  status: text("status").$type<UserStatus>().notNull().default(UserStatus.ACTIVE),
+  created_at: text("created_at").notNull().default(createdAt),
+  updated_at: text("updated_at").notNull().default(createdAt),
+});
+
+/** Purchasable plan; see migrations/0003 for the 0/NULL = unrestricted conventions. */
+export const packages = sqliteTable("packages", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  note: text("note"),
+  traffic_bytes: integer("traffic_bytes").notNull().default(0),
+  period_days: integer("period_days").notNull().default(0),
+  node_ids: text("node_ids", { mode: "json" }).$type<number[]>(),
+  tunnel_ids: text("tunnel_ids", { mode: "json" }).$type<number[]>(),
+  max_rules: integer("max_rules").notNull().default(0),
+  created_at: text("created_at").notNull().default(createdAt),
+  updated_at: text("updated_at").notNull().default(createdAt),
+});
+
+/**
+ * One active subscription per user. Switching/renewing replaces the row with a
+ * fresh activated_at — the usage window restarts (换购清零). package_name /
+ * traffic_bytes are SNAPSHOTS frozen at subscribe time so history stays
+ * interpretable after the package is renamed/edited (enforcement still reads
+ * the live packages row).
+ */
+export const userPackages = sqliteTable(
+  "user_packages",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    user_id: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    package_id: integer("package_id")
+      .notNull()
+      .references(() => packages.id, { onDelete: "restrict" }),
+    package_name: text("package_name").notNull().default(""),
+    traffic_bytes: integer("traffic_bytes").notNull().default(0),
+    activated_at: text("activated_at").notNull(),
+    expires_at: text("expires_at"),
+    created_at: text("created_at").notNull().default(createdAt),
+    updated_at: text("updated_at").notNull().default(createdAt),
+  },
+  (table) => [uniqueIndex("uq_user_packages_user").on(table.user_id)],
+);
+
+/**
+ * Last cumulative observer counters per (node, service), used to turn
+ * cumulative stat snapshots into per-report deltas at ingest time.
+ */
+export const trafficCounters = sqliteTable(
+  "traffic_counters",
+  {
+    node_id: integer("node_id")
+      .notNull()
+      .references(() => relayNodes.id, { onDelete: "cascade" }),
+    service: text("service").notNull(),
+    upload: integer("upload").notNull().default(0),
+    download: integer("download").notNull().default(0),
+    updated_at: text("updated_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.node_id, table.service] })],
+);
+
+/**
+ * Hourly per-rule traffic ledger — the billing source of truth quota
+ * remaining is computed from. Deliberately NO foreign keys: deleting a rule
+ * or user must not erase usage that already happened. user_id/node_id are
+ * ingest-time snapshots (0 = rule already gone). Never pruned (permanent
+ * packages need unbounded windows).
+ */
+export const trafficHourly = sqliteTable(
+  "traffic_hourly",
+  {
+    rule_id: integer("rule_id").notNull(),
+    user_id: integer("user_id").notNull().default(0),
+    node_id: integer("node_id").notNull().default(0),
+    hour_ts: text("hour_ts").notNull(),
+    real_upload: integer("real_upload").notNull().default(0),
+    real_download: integer("real_download").notNull().default(0),
+    /** Charged bytes: round(real × the node's rate), accumulated at ingest. */
+    billed_upload: integer("billed_upload").notNull().default(0),
+    billed_download: integer("billed_download").notNull().default(0),
+  },
+  (table) => [primaryKey({ columns: [table.rule_id, table.hour_ts] })],
+);
+
+/**
+ * Hourly per-service connection rollup: sum + samples (exact average at read
+ * time) and max kept separately — peaks cause stalls, averages flatten them.
+ * No FK on node_id: removing a node must not erase the history that explains
+ * what it did. Pruned after 7 days.
+ */
+export const serviceMetricsHourly = sqliteTable(
+  "service_metrics_hourly",
+  {
+    node_id: integer("node_id").notNull(),
+    service: text("service").notNull(),
+    hour_ts: text("hour_ts").notNull(),
+    samples: integer("samples").notNull().default(0),
+    conn_sum: integer("conn_sum").notNull().default(0),
+    conn_max: integer("conn_max").notNull().default(0),
+  },
+  (table) => [primaryKey({ columns: [table.node_id, table.service, table.hour_ts] })],
+);
+
+/** Admin audit trail; actor is a snapshot string, detail never holds secrets. */
+export const auditLog = sqliteTable(
+  "audit_log",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ts: text("ts").notNull(),
+    actor: text("actor").notNull().default(""),
+    action: text("action").notNull(),
+    target_type: text("target_type").notNull().default(""),
+    target_id: text("target_id").notNull().default(""),
+    detail: text("detail").notNull().default(""),
+  },
+  (table) => [index("idx_audit_ts").on(table.ts), index("idx_audit_action").on(table.action, table.ts)],
 );

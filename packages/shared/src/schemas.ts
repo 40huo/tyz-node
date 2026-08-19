@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { ChainType, RelayRuleStatus, Transport } from "./entities";
+import { ChainType, RelayRuleStatus, Transport, UserStatus } from "./entities";
 
 export const chainTypeSchema = z.nativeEnum(ChainType);
 export const transportSchema = z.nativeEnum(Transport);
 export const relayRuleStatusSchema = z.nativeEnum(RelayRuleStatus);
+export const userStatusSchema = z.nativeEnum(UserStatus);
 
 const ipTrafficLimitSchema = z.object({
   ip: z.string(),
@@ -69,6 +70,7 @@ export const relayNodePayloadSchema = z.object({
   ingress_traffic: z.number().nonnegative(),
   traffic_limit: z.number().nonnegative(),
   enlarge_scale: z.number().nonnegative(),
+  rate: z.number().min(0.1).max(100).default(1),
   ports: z.string().regex(/^\d+-\d+$/, "ports must look like '10000-20000'"),
   custom_cfg: z.unknown().optional(),
   created_at: z.string(),
@@ -103,9 +105,18 @@ export const relayRuleSchema = z.object({
   description: z.string().optional(),
   listen_port: z.number().int().positive(),
   tunnel_id: z.number().int().positive().optional(),
+  user_id: z.number().int().positive().optional(),
   targets: z.string(),
   status: relayRuleStatusSchema,
   limit: limiterConfigSchema.nullable().optional(),
+  quota: z
+    .object({
+      name: z.string().min(1),
+      limit_bytes: z.number().int().positive(),
+      starts_at: z.string(),
+      expires_at: z.string().optional(),
+    })
+    .optional(),
   upload_traffic: z.number().nonnegative(),
   download_traffic: z.number().nonnegative(),
   created_at: z.string(),
@@ -137,9 +148,24 @@ const gostStatsSampleSchema = z.object({
   totalErrs: z.number().int().nonnegative(),
 });
 
-export const agentStatsBatchSchema = z.object({
-  samples: z.array(gostStatsSampleSchema).min(1),
+// The agent additionally reports the runtime state of every managed GOST
+// service with each stats flush (x/service.State: running|ready|failed|closed).
+
+const serviceHealthSampleSchema = z.object({
+  service: z.string(),
+  state: z.string(),
+  error: z.string().optional(),
 });
 
+export const agentStatsBatchSchema = z
+  .object({
+    samples: z.array(gostStatsSampleSchema).default([]),
+    health: z.array(serviceHealthSampleSchema).default([]),
+  })
+  .refine((v) => v.samples.length > 0 || v.health.length > 0, {
+    message: "batch must carry samples or health",
+  });
+
 export type GostStatsSample = z.infer<typeof gostStatsSampleSchema>;
+export type ServiceHealthSample = z.infer<typeof serviceHealthSampleSchema>;
 export type AgentStatsBatch = z.infer<typeof agentStatsBatchSchema>;
