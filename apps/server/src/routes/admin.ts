@@ -51,7 +51,13 @@ import {
   users,
 } from "../db/schema";
 import type { Bindings } from "../env";
-import { adminAuth, clearSessionCookie, issueSessionCookie, verifyAdminCredentials } from "../middleware/adminAuth";
+import {
+  adminAuth,
+  clearSessionCookie,
+  isAdminAuthConfigured,
+  issueSessionCookie,
+  verifyAdminCredentials,
+} from "../middleware/adminAuth";
 import { listAudit, recordAudit } from "../services/audit";
 import { dashboardSummary, dashboardTraffic } from "../services/dashboard";
 import { broadcastNodeMessage, notifyConfigChanged } from "../services/notify";
@@ -67,6 +73,17 @@ adminRoutes.post("/login", async (c) => {
   const parsed = loginSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
     return c.json({ error: "invalid login payload" }, 400);
+  }
+  if (!isAdminAuthConfigured(c.env)) {
+    // A distinct status so a fresh deployment fails loudly with setup guidance
+    // instead of an ambiguous "wrong password" 401.
+    return c.json(
+      {
+        error:
+          "管理员凭据未配置：请在 Cloudflare Dashboard → Settings → Variables and Secrets 添加 ADMIN_USERNAME 与 ADMIN_PASSWORD（类型选 Secret），保存后立即生效，无需重新部署",
+      },
+      503,
+    );
   }
   if (!(await verifyAdminCredentials(c.env, parsed.data.username, parsed.data.password))) {
     return c.json({ error: "invalid credentials" }, 401);
@@ -158,6 +175,22 @@ async function tunnelShape(db: Database, tunnelId: number): Promise<TunnelShape>
 }
 
 /**
+ * TLS shape rules: reject only states that can never be completed into the
+ * valid 1-in / 1-out grpc|tls shape. A missing side (in-only or out-only) is
+ * a construction intermediate — links are added one modal at a time, so the
+ * strict "exactly two nodes" check would deadlock the very first chain write.
+ * Aggregation degrades intermediates to plaintext until the second link lands.
+ */
+function tlsShapeProblem(shape: TunnelShape): string | null {
+  if (shape.ins > 1) return "TLS 隧道只允许一条入口链路";
+  if (shape.outs > 1) return "TLS 隧道只允许一条出口链路";
+  if (shape.outs === 1 && shape.outTransport !== Transport.GRPC && shape.outTransport !== Transport.TLS) {
+    return "TLS 要求出口链路的传输为 grpc 或 tls";
+  }
+  return null;
+}
+
+/**
  * Validate the tunnel's mode flags against its chain shape. Empty tunnels
  * (no chains yet) accept anything — the shape is judged once links exist,
  * both on tunnel updates and on chain writes. Aggregation additionally
@@ -186,11 +219,9 @@ async function validateTunnelMode(
     }
     return null;
   }
-  // tls_enabled relay tunnel
-  if (!twoHop) return "TLS 仅支持两节点隧道（一入口一出口）";
-  if (shape.outTransport !== Transport.GRPC && shape.outTransport !== Transport.TLS) {
-    return "TLS 要求出口链路的传输为 grpc 或 tls";
-  }
+  // tls_enabled relay tunnel: only unreachable states are rejected (see tlsShapeProblem)
+  const problem = tlsShapeProblem(shape);
+  if (problem) return problem;
   if (!(await getTlsDomain(db))) return "请先在设置中配置 TLS 伪装域名";
   return null;
 }
@@ -618,12 +649,13 @@ adminRoutes.delete("/chains/:id", async (c) => {
   if (!existing) {
     return c.json({ error: "chain not found" }, 404);
   }
-  // Removing one of the two links of a TLS tunnel breaks its 2-hop shape —
-  // the operator must turn TLS off first.
+  // Deleting one link of a COMPLETE TLS tunnel would silently downgrade the
+  // live link to plaintext — the operator must turn TLS off first. Incomplete
+  // shapes (still under construction) may delete freely.
   const tunnel = await db.select().from(tunnels).where(eq(tunnels.id, existing.tunnel_id)).get();
   if (tunnel?.tls_enabled) {
-    const remaining = await db.select({ id: chains.id }).from(chains).where(eq(chains.tunnel_id, existing.tunnel_id));
-    if (remaining.length <= 2) {
+    const shape = await tunnelShape(db, existing.tunnel_id);
+    if (shape.ins === 1 && shape.outs === 1) {
       return c.json({ error: "TLS 隧道必须保持两节点形态，请先关闭 TLS 再删除链路" }, 400);
     }
   }
@@ -646,11 +678,9 @@ async function validateProjectedShape(db: Database, tunnelId: number, shape: Tun
     }
     return null;
   }
-  if (!twoHop) return "TLS 隧道必须保持两节点形态（一入口一出口）";
-  if (shape.outTransport !== Transport.GRPC && shape.outTransport !== Transport.TLS) {
-    return "TLS 要求出口链路的传输为 grpc 或 tls";
-  }
-  return null;
+  // tls_enabled relay tunnel: only unreachable states are rejected; a missing
+  // side is a construction intermediate (links are created one at a time).
+  return tlsShapeProblem(shape);
 }
 
 // ---- Relay rules ----

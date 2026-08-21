@@ -38,15 +38,14 @@ GOST 隧道管理平台：Cloudflare 上的控制面（Worker + D1 + 管理 Web�
 ```bash
 bun install
 
-# 1. 控制面（端口 8787）
-cd apps/server
+# 1. 控制面（端口 8787；wrangler.jsonc 与 .dev.vars 都在仓库根）
 cp .dev.vars.example .dev.vars        # 默认 admin/admin123 即可登录本地面板
 bunx wrangler d1 migrations apply DB --local
-bunx wrangler d1 execute DB --local --file scripts/seed-local.sql   # 可选：本地样例数据
-bun run dev        # wrangler dev
+bun run db:seed:local                 # 可选：本地样例数据
+bun run dev:server                    # wrangler dev
 
 # 2. 管理面板（端口 5173，/admin 等代理到 8787）
-cd ../.. && bun run dev:web
+bun run dev:web
 
 # 3. 节点 agent（端口 18090，GOST 已内嵌，无需单独安装）
 CONTROL_PLANE_URL=http://localhost:8787 NODE_TOKEN=dev-token-1 bun run dev:agent
@@ -71,12 +70,11 @@ apps/agent/scripts/e2e-local.sh
 推荐：**Fork 本仓库**后在 Cloudflare Dashboard 用 Workers Builds 连接你的 fork（自动创建 D1，无需填任何资源 ID；构建设置见[部署指南 §3.2](docs/deployment.md)），再配 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 两个 secret 即可。CLI 手动部署：
 
 ```bash
-cd apps/server
 bunx wrangler secret put ADMIN_USERNAME
 bunx wrangler secret put ADMIN_PASSWORD
-bun run --filter @tyz/web build             # Worker Assets 托管 ../web/dist
+bun run build:web                           # Worker Assets 托管 apps/web/dist
 bunx wrangler deploy                        # 首次部署自动创建 D1（自动资源供给，无需 database_id）
-bunx wrangler d1 migrations apply DB --remote
+bun run db:migrate
 ```
 
 CI：`deploy-server.yml`（手动触发或 v* tag，需 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` secrets）；`check.yml`（lint + 类型检查 + agent Go vet/test + 前端构建）。
