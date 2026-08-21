@@ -6,6 +6,11 @@ import { hashAdminPassword, hmacHex, sha256Hex, timingSafeEqual } from "../utils
 const COOKIE_NAME = "tyz_admin";
 const SESSION_TTL_S = 7 * 24 * 60 * 60; // 7 days
 
+/** True when either ADMIN_PASSWORD (preferred) or the legacy hash pair is present. */
+export function isAdminAuthConfigured(env: Bindings): boolean {
+  return env.ADMIN_PASSWORD !== undefined || (env.ADMIN_PASSWORD_SHA256 !== undefined && env.TOKEN_SALT !== undefined);
+}
+
 export async function verifyAdminCredentials(env: Bindings, username: string, password: string) {
   if (username !== env.ADMIN_USERNAME) {
     return false;
@@ -18,7 +23,6 @@ export async function verifyAdminCredentials(env: Bindings, username: string, pa
     const actualHash = await hashAdminPassword(env.TOKEN_SALT, password);
     return timingSafeEqual(actualHash, env.ADMIN_PASSWORD_SHA256);
   }
-  console.error("admin login rejected: neither ADMIN_PASSWORD nor (ADMIN_PASSWORD_SHA256 + TOKEN_SALT) is configured");
   return false;
 }
 

@@ -12,7 +12,7 @@
 #      admission — the censorship-evasion link shape.
 #
 # Prerequisites: bun, go, python3, and wrangler dev running on :8787 with the
-# apps/server .dev.vars + local seed applied. The script re-applies the seed,
+# root .dev.vars + local seed applied. The script re-applies the seed,
 # then builds the agent, starts two local HTTP targets and two agent
 # processes, and asserts distinguishable responses through both entry ports.
 set -euo pipefail
@@ -25,7 +25,7 @@ cd "$ROOT"
 command -v python3 >/dev/null || { echo "SKIP: python3 required for local targets"; exit 1; }
 
 echo "== re-applying local seed =="
-(cd apps/server && bunx wrangler d1 execute DB --local --file scripts/seed-local.sql >/dev/null)
+(bunx wrangler d1 execute DB --local --file apps/server/scripts/seed-local.sql >/dev/null)
 
 echo "== building agent =="
 (cd apps/agent && CGO_ENABLED=0 go build -trimpath -o "$AGENT_BIN" .)

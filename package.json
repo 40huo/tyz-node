@@ -9,9 +9,13 @@
   "scripts": {
     "dev:agent": "cd apps/agent && go run .",
     "test:agent": "cd apps/agent && go test ./...",
-    "dev:server": "bun run --filter @tyz/server dev",
+    "dev:server": "wrangler dev",
     "dev:web": "bun run --filter @tyz/web dev",
     "build:web": "bun run --filter @tyz/web build",
+    "db:migrate": "wrangler d1 migrations apply DB --remote",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:seed:local": "wrangler d1 execute DB --local --file apps/server/scripts/seed-local.sql",
+    "deploy:server": "wrangler deploy && npm run db:migrate",
     "type-check": "bun run --filter '*' type-check",
     "lint": "biome check .",
     "format": "biome format --write ."

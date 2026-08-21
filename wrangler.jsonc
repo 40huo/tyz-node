@@ -1,10 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "tyz-server",
-  "main": "src/index.ts",
+  "main": "apps/server/src/index.ts",
   "compatibility_date": "2025-06-01",
   "assets": {
-    "directory": "../web/dist",
+    "directory": "apps/web/dist",
     "binding": "ASSETS"
   },
   "d1_databases": [
@@ -14,14 +14,14 @@
       // No database_id on purpose: automatic resource provisioning (wrangler >= 4.45)
       // creates the database on first `wrangler dev` / `wrangler deploy` and keeps it
       // linked by name, so this public repo never carries an account-specific id.
-      "migrations_dir": "migrations"
+      "migrations_dir": "apps/server/migrations"
     }
   ],
   // Daily stats retention cleanup at 03:00 UTC.
   "triggers": {
     "crons": ["0 3 * * *"]
   },
-  // Per-node WebSocket push channel (see src/do/nodePush.ts).
+  // Per-node WebSocket push channel (see apps/server/src/do/nodePush.ts).
   "durable_objects": {
     "bindings": [
       {

@@ -21,15 +21,15 @@ bun run lint                    # biome check (root)
 bun run type-check              # tsc --noEmit in every workspace
 bun run build:web               # build apps/web -> apps/web/dist
 
-bun run dev:server              # wrangler dev (8787) — run inside apps/server after migrations
+bun run dev:server              # wrangler dev (8787, root wrangler.jsonc) — apply migrations first
 bun run dev:web                 # vite dev (5173, proxies /api to 8787)
 bun run dev:agent               # go run the agent (18090); needs CONTROL_PLANE_URL + NODE_TOKEN
 bun run test:agent              # go test ./... in apps/agent (golden builder, WS state machine, apply)
 
-# Server (inside apps/server)
+# Server (from the repo root — wrangler.jsonc lives there)
 bunx wrangler d1 migrations apply DB --local      # apply migrations to local D1
-bunx wrangler d1 execute DB --local --file scripts/seed-local.sql   # local seed data
-bun run scripts/test-ws-push.ts [baseUrl]        # e2e push test vs wrangler dev (dev-token-1, admin/admin123)
+bun run db:seed:local                            # local seed data
+bun run apps/server/scripts/test-ws-push.ts [baseUrl]   # e2e push test vs wrangler dev (dev-token-1, admin/admin123)
 
 # Agent (inside apps/agent)
 go vet ./... && go test ./...
@@ -153,8 +153,7 @@ All GOST objects are named deterministically (`service-{ruleId}` at entries, `se
 
 - SQLite (D1): enums are TEXT + CHECK constraints; `limit`/`custom_cfg`/`tls_config`/`stats` stored as JSON TEXT.
 - Field spellings are now **corrected**: `display_address`, `ingress_display_address` (the old Supabase `disaply_*` typo is intentionally not carried over).
-- Node tokens are stored as SHA-256 hashes only (salted when the optional `TOKEN_SALT` secret is set); the raw token is displayed exactly once (create/rotate). The D1 binding in `wrangler.jsonc` intentionally omits `database_id` — wrangler's automatic resource provisioning (≥ 4.45) creates/links the database by name, keeping the public repo free of account-specific ids.
-- Node tokens are stored as SHA-256 hashes only (salted when the optional `TOKEN_SALT` secret is set); the raw token is displayed exactly once (create/rotate). The D1 binding in `wrangler.jsonc` intentionally omits `database_id` — wrangler's automatic resource provisioning (≥ 4.45) creates/links the database by name, keeping the public repo free of account-specific ids.
+- Node tokens are stored as SHA-256 hashes only (salted when the optional `TOKEN_SALT` secret is set); the raw token is displayed exactly once (create/rotate). The root `wrangler.jsonc` D1 binding intentionally omits `database_id` — wrangler's automatic resource provisioning (≥ 4.45) creates/links the database by name, keeping the public repo free of account-specific ids.
 - `relay_rules.tunnel_id` NULL means "not deployed anywhere" (not part of any node's config). `relay_rules.user_id` NULL means admin-managed (never quota-gated). `relay_rules.exit_port` = dedicated raw-mode exit port (0 = deterministic auto-allocation, see builder). `relay_rules.endpoint_id` references a stored `endpoints` row (NULL = manually-entered address): `targets` keeps its own copy of the composed address so the agent config pipeline never joins endpoints — the admin API re-syncs referencing rules (and recomputes their tunnels) whenever an endpoint's host/port change, resolves the address server-side on rule writes, and refuses to delete an endpoint that is still referenced (409). `endpointAddress()` in `@tyz/shared` composes host+port (IPv6 bracketed) on both sides.
 - `tunnels.forward_mode` ∈ {relay, raw} — raw is valid for the single-node shape (one `in` chain, direct forward) and the two-node shape (one `in` + one `out`); `tunnels.tls_enabled` requires the 2-hop relay shape with out transport grpc|tls; `tunnels.relay_auth_user/pass` are stored PLAINTEXT (every recompute re-emits them into agent configs as cleartext AuthConfig) and stripped from all admin responses (`toTunnel` vs `toTunnelPayload`). Mode/shape rules are enforced on tunnel + chain writes (`validateTunnelMode` / `validateProjectedShape`) and re-normalized at aggregation (`normalizeTunnelMode`) as a last line of defense — an impossible state degrades to plaintext relay, consistent on both ends.
 - `app_settings` (key/value; v1 key `tls_domain`) and `tls_material` (kind PK + PEM + not_after) — see `services/tls.ts`. Keys/PEMs never selected into admin responses.
@@ -170,7 +169,7 @@ All GOST objects are named deterministically (`service-{ruleId}` at entries, `se
 
 Agent (`apps/agent/.env.example`, loaded from the working directory; real env vars take precedence): `CONTROL_PLANE_URL`, `NODE_TOKEN` (required); `PORT` (18090), `HOST` (127.0.0.1), `POLL_INTERVAL_MS` (10000), `STATS_FLUSH_INTERVAL_MS` (60000), `WS_ENABLED` (true; false = pure HTTP polling), `WS_PROBE_INTERVAL_MS` (60000; WS reconnect probe interval while in poll fallback), `WS_PING_INTERVAL_MS` (60000; heartbeat, clamped < 90s), `GOST_API_ADDR` (empty; set e.g. `127.0.0.1:18080` to expose the embedded GOST Web API for debugging), `DEBUG`.
 
-Server (`apps/server/.dev.vars.example` for local; `wrangler secret put` for production): `ADMIN_USERNAME`, `ADMIN_PASSWORD` (plaintext login; legacy `ADMIN_PASSWORD_SHA256` + `TOKEN_SALT` as an alternative); optional `SESSION_SECRET` (derived from the admin credential when unset) and `TOKEN_SALT` (**if set, changes the token-hash scheme — never change/unset it after nodes exist**).
+Server (root `.dev.vars` for local — next to `wrangler.jsonc`; `wrangler secret put` for production): `ADMIN_USERNAME`, `ADMIN_PASSWORD` (plaintext login; legacy `ADMIN_PASSWORD_SHA256` + `TOKEN_SALT` as an alternative); optional `SESSION_SECRET` (derived from the admin credential when unset) and `TOKEN_SALT` (**if set, changes the token-hash scheme — never change/unset it after nodes exist**).
 
 ## HTTP Endpoints
 

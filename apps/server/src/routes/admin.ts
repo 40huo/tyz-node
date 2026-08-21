@@ -51,7 +51,13 @@ import {
   users,
 } from "../db/schema";
 import type { Bindings } from "../env";
-import { adminAuth, clearSessionCookie, issueSessionCookie, verifyAdminCredentials } from "../middleware/adminAuth";
+import {
+  adminAuth,
+  clearSessionCookie,
+  isAdminAuthConfigured,
+  issueSessionCookie,
+  verifyAdminCredentials,
+} from "../middleware/adminAuth";
 import { listAudit, recordAudit } from "../services/audit";
 import { dashboardSummary, dashboardTraffic } from "../services/dashboard";
 import { broadcastNodeMessage, notifyConfigChanged } from "../services/notify";
@@ -67,6 +73,17 @@ adminRoutes.post("/login", async (c) => {
   const parsed = loginSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
     return c.json({ error: "invalid login payload" }, 400);
+  }
+  if (!isAdminAuthConfigured(c.env)) {
+    // A distinct status so a fresh deployment fails loudly with setup guidance
+    // instead of an ambiguous "wrong password" 401.
+    return c.json(
+      {
+        error:
+          "管理员凭据未配置：请在 Cloudflare Dashboard → Settings → Variables and Secrets 添加 ADMIN_USERNAME 与 ADMIN_PASSWORD（类型选 Secret），保存后立即生效，无需重新部署",
+      },
+      503,
+    );
   }
   if (!(await verifyAdminCredentials(c.env, parsed.data.username, parsed.data.password))) {
     return c.json({ error: "invalid credentials" }, 401);
