@@ -64,13 +64,11 @@ apps/agent/scripts/e2e-local.sh
 
 ## 部署
 
-> 完整生产部署指南（Deploy 按钮、Workers Builds、面板初始化、节点机部署、运维与排障）见 **[docs/deployment.md](docs/deployment.md)**。以下为最小 runbook。
+> 完整生产部署指南（Fork 部署、Workers Builds、面板初始化、节点机部署、运维与排障）见 **[docs/deployment.md](docs/deployment.md)**。以下为最小 runbook。
 
 ### 控制面（Cloudflare）
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/laoshan-tech/tyz-node/tree/master/apps/server)
-
-一键部署：点上面的按钮（自动克隆仓库到你的账户、创建 D1 等资源、预填构建/部署命令），按提示填 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 两个 secret 即可。想自己维护副本或改代码：**Fork 本仓库**后在 Cloudflare Dashboard 连接你的 fork 部署（步骤见[部署指南 §3.2](docs/deployment.md)）。CLI 手动部署：
+推荐：**Fork 本仓库**后在 Cloudflare Dashboard 用 Workers Builds 连接你的 fork（自动创建 D1，无需填任何资源 ID；构建设置见[部署指南 §3.2](docs/deployment.md)），再配 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 两个 secret 即可。CLI 手动部署：
 
 ```bash
 cd apps/server
