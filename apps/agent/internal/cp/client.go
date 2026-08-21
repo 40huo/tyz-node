@@ -68,6 +68,15 @@ func (c *Client) FetchConfig(ctx context.Context, version int64) (resp *model.Ag
 // UploadStats posts one batch of stats samples plus the current service
 // health snapshot. Either may be empty.
 func (c *Client) UploadStats(ctx context.Context, samples []model.GostStatsSample, health []model.ServiceHealthSample) error {
+	// A nil slice marshals as JSON null, which older servers reject — an
+	// idle node (services running, no stats buffered yet) would otherwise
+	// fail every flush. Emit [] instead.
+	if samples == nil {
+		samples = []model.GostStatsSample{}
+	}
+	if health == nil {
+		health = []model.ServiceHealthSample{}
+	}
 	body, err := json.Marshal(struct {
 		Samples []model.GostStatsSample     `json:"samples"`
 		Health  []model.ServiceHealthSample `json:"health,omitempty"`
@@ -88,10 +97,12 @@ func (c *Client) UploadStats(ctx context.Context, samples []model.GostStatsSampl
 		return err
 	}
 	defer httpResp.Body.Close()
-	io.Copy(io.Discard, httpResp.Body) //nolint:errcheck
+	// Keep a truncated response body so server-side validation errors (400)
+	// are self-explanatory in the agent log instead of a bare status code.
+	respBody, _ := io.ReadAll(io.LimitReader(httpResp.Body, 512))
 
 	if httpResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("stats upload failed: %d %s", httpResp.StatusCode, httpResp.Status)
+		return fmt.Errorf("stats upload failed: %d %s: %s", httpResp.StatusCode, httpResp.Status, respBody)
 	}
 	return nil
 }
