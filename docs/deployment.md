@@ -263,7 +263,7 @@ git push origin master
 | 双节点裸转 | 1 条 `in` + 1 条 `out` 链 | `forward_mode=raw`：每规则独立端口对，线路上无 relay 协议头（抗审查形态） |
 
 - 链路行（chain）字段：节点、端口（`0` = 自动分配，见 2.2 公式）、传输（tcp/ws/grpc/tls/mwss…）、`index`（多跳排序）。
-- **链路 TLS**（`tls_enabled`）仅支持双节点 relay 形态且出口传输为 `grpc` 或 `tls`：mTLS（平台签发证书）+ 每隧道 relay 凭据（自动生成）+ admission 白名单（自动收集入口节点 IP）三层认证；grpc 传输自动加 `/grpc` path 与 h2 ALPN 伪装。**前提：先在设置页配置 `tls_domain`（见 4.6），否则 TLS 隧道聚合直接报错。**
+- **链路 TLS**（`tls_enabled`）仅支持双节点 relay 形态且出口传输为 `grpc` 或 `tls`：mTLS（平台签发证书）+ 每隧道 relay 凭据（自动生成）+ admission 白名单（自动收集入口节点 IP）三层认证；grpc 传输自动加 `/grpc` path 与 h2 ALPN 伪装。**前提：先在设置页配置 `tls_domain`（见 4.6），否则 TLS 隧道聚合直接报错。** 链路逐条添加即可：只缺一侧时视为搭建中的过渡态（聚合按明文 relay 处理），补齐第二侧后自动升级为 TLS；入口/出口超过一条、或出口传输不是 grpc/tls 会被立即拒绝并提示原因。
 - `ingress_display_address` 是给用户看的展示地址，不参与任何配置生成。
 
 ### 4.4 规则（Rules）
