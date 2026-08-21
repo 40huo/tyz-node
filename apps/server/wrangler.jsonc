@@ -11,8 +11,9 @@
     {
       "binding": "DB",
       "database_name": "tyz",
-      // Replace with `wrangler d1 create tyz` output before deploying remotely.
-      "database_id": "local-dev-placeholder",
+      // No database_id on purpose: automatic resource provisioning (wrangler >= 4.45)
+      // creates the database on first `wrangler dev` / `wrangler deploy` and keeps it
+      // linked by name, so this public repo never carries an account-specific id.
       "migrations_dir": "migrations"
     }
   ],

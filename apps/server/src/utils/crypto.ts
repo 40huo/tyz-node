@@ -27,10 +27,12 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-export function hashNodeToken(salt: string, token: string): Promise<string> {
-  return sha256Hex(`${salt}:node:${token}`);
+/** `sha256(salt:node:token)` with a salt, `sha256(node:token)` without — tokens are high-entropy either way. */
+export function hashNodeToken(salt: string | undefined, token: string): Promise<string> {
+  return sha256Hex(salt ? `${salt}:node:${token}` : `node:${token}`);
 }
 
+/** Legacy hash scheme for ADMIN_PASSWORD_SHA256 (kept for deployments created before ADMIN_PASSWORD existed). */
 export function hashAdminPassword(salt: string, password: string): Promise<string> {
   return sha256Hex(`${salt}:admin:${password}`);
 }
