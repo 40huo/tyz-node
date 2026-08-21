@@ -1,5 +1,6 @@
 import {
   Button,
+  Chip,
   Description,
   Drawer,
   EmptyState,
@@ -11,13 +12,17 @@ import {
   ListBox,
   Modal,
   NumberField,
+  Pagination,
   Paragraph,
+  SearchField,
   Select,
+  Skeleton,
   Spinner,
   TextArea,
   TextField,
   toast,
 } from "@heroui/react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ComponentProps, type ReactNode, useCallback, useRef, useState } from "react";
 
 export const fail = (error: unknown) => toast.danger(error instanceof Error ? error.message : "操作失败");
@@ -197,19 +202,23 @@ export function SideDrawer({
   title,
   isOpen,
   onClose,
-  width = "w-[min(48rem,100vw)]",
+  width = "min(48rem, 100vw)",
   children,
 }: {
   title: string;
   isOpen: boolean;
   onClose: () => void;
+  /** CSS width，作用于右侧抽屉面板本体。 */
   width?: string;
   children: ReactNode;
 }) {
   return (
     <Drawer.Backdrop isOpen={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <Drawer.Content placement="right" className={width}>
-        <Drawer.Dialog aria-label={title}>
+      {/* Content 是全屏 fixed 定位容器（inset:0），宽度必须设在 Dialog 面板上；
+          且 HeroUI 用 `.drawer__dialog[data-placement=right]` 媒体查询定默认宽（属性
+          选择器特异性高于工具类），所以用内联 style 覆盖而不是 className。 */}
+      <Drawer.Content placement="right">
+        <Drawer.Dialog aria-label={title} style={{ width }}>
           <Drawer.CloseTrigger />
           <Drawer.Header>
             <Drawer.Heading>{title}</Drawer.Heading>
@@ -245,16 +254,216 @@ export function PageShell({ children }: { children: ReactNode }) {
 
 // ---- Table helpers ----
 
-export function TableLoading() {
+const SKELETON_ROW_IDS = Array.from({ length: 12 }, (_, i) => i + 1);
+
+/** 表格加载态：骨架行占位（替代居中 Spinner，避免加载完成后布局跳动）。纯视觉占位。 */
+export function TableLoading({ rows = 6 }: { rows?: number }) {
   return (
-    <div className="flex justify-center py-10">
-      <Spinner />
+    <div className="flex flex-col gap-2.5 py-2">
+      {SKELETON_ROW_IDS.slice(0, rows).map((n) => (
+        <Skeleton key={n} className="h-9 w-full rounded-md" />
+      ))}
     </div>
+  );
+}
+
+/** 查询失败态：区分于空态，提供重试入口。 */
+export function TableError({ onRetry }: { onRetry?: () => void }) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border py-10">
+      <p className="text-sm text-muted">加载失败，请稍后重试</p>
+      {onRetry !== undefined && (
+        <Button size="sm" variant="tertiary" onPress={onRetry}>
+          重试
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** 客户端分页（列表行数有限，直接数字页码）。 */
+export function Pager({
+  page,
+  pageCount,
+  onChange,
+}: {
+  page: number;
+  pageCount: number;
+  onChange: (page: number) => void;
+}) {
+  if (pageCount <= 1) return null;
+  return (
+    <Pagination size="sm" className="mt-3 justify-center">
+      <Pagination.Content>
+        <Pagination.Item>
+          <Pagination.Previous isDisabled={page === 1} onPress={() => onChange(page - 1)}>
+            <Pagination.PreviousIcon />
+          </Pagination.Previous>
+        </Pagination.Item>
+        {Array.from({ length: pageCount }, (_, i) => i + 1).map((p) => (
+          <Pagination.Item key={p}>
+            <Pagination.Link isActive={p === page} onPress={() => onChange(p)}>
+              {p}
+            </Pagination.Link>
+          </Pagination.Item>
+        ))}
+        <Pagination.Item>
+          <Pagination.Next isDisabled={page === pageCount} onPress={() => onChange(page + 1)}>
+            <Pagination.NextIcon />
+          </Pagination.Next>
+        </Pagination.Item>
+      </Pagination.Content>
+    </Pagination>
   );
 }
 
 export function emptyState(text: string) {
   return () => <EmptyState className="py-10 text-center">{text}</EmptyState>;
+}
+
+// ---- Status / toolbar ----
+
+export type ChipTone = ComponentProps<typeof Chip>["color"];
+
+/** 全站统一的状态 Chip：文案与色值由 labels.ts 的映射提供。 */
+export function StatusChip({
+  tone = "default",
+  icon,
+  title,
+  className,
+  children,
+}: {
+  tone?: ChipTone;
+  icon?: ReactNode;
+  title?: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Chip color={tone} variant="soft" size="sm" className={className} title={title}>
+      <Chip.Label className="flex items-center gap-1">
+        {icon}
+        {children}
+      </Chip.Label>
+    </Chip>
+  );
+}
+
+/** 列表页搜索框。 */
+export function SearchInput({
+  value,
+  onChange,
+  placeholder = "搜索",
+  className,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  className?: string;
+}) {
+  return (
+    <SearchField aria-label={placeholder} value={value} onChange={onChange} className={cn("w-full sm:w-60", className)}>
+      <SearchField.Group>
+        <SearchField.SearchIcon />
+        <SearchField.Input placeholder={placeholder} />
+        <SearchField.ClearButton />
+      </SearchField.Group>
+    </SearchField>
+  );
+}
+
+/** 状态筛选 chip 组：value 为当前选中项（含“全部”哨兵值）。 */
+export function FilterChips<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: T; label: string; count?: number }[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {options.map((option) => (
+        <Button
+          key={option.value}
+          variant="ghost"
+          size="sm"
+          className={cn(
+            "h-8 rounded-full px-3 font-normal",
+            option.value === value && "bg-accent-soft font-medium text-accent-soft-foreground",
+          )}
+          onPress={() => onChange(option.value)}
+        >
+          {option.label}
+          {option.count !== undefined && <span className="text-xs opacity-70">{option.count}</span>}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
+/** 列表页工具栏：搜索 + 筛选 chip 的水平容器。 */
+export function ListToolbar({ children }: { children: ReactNode }) {
+  return <div className="flex flex-wrap items-center gap-2">{children}</div>;
+}
+
+// ---- CRUD helpers ----
+
+/**
+ * 表单弹窗的 create/update 统一 mutation：成功后失效缓存并关闭弹窗。
+ * Node 的 onCreated 用于承接 create 返回的一次性令牌。
+ */
+export function useCrudMutation<TInput, TCreateResult = unknown>(options: {
+  invalidateKeys: unknown[][];
+  create: (input: TInput) => Promise<TCreateResult>;
+  update: (id: number, input: TInput) => Promise<unknown>;
+  onCreated?: (result: TCreateResult) => void;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const settle = () => {
+    for (const key of options.invalidateKeys) queryClient.invalidateQueries({ queryKey: key });
+    options.onClose();
+  };
+  const createMutation = useMutation({
+    mutationFn: options.create,
+    onSuccess: (result) => {
+      settle();
+      options.onCreated?.(result);
+    },
+    onError: fail,
+  });
+  const updateMutation = useMutation({
+    mutationFn: ({ id, input }: { id: number; input: TInput }) => options.update(id, input),
+    onSuccess: settle,
+    onError: fail,
+  });
+  const save = (id: number | null, input: TInput) => {
+    if (id === null) createMutation.mutate(input);
+    else updateMutation.mutate({ id, input });
+  };
+  return { save, isPending: createMutation.isPending || updateMutation.isPending };
+}
+
+/** 表单底部按钮行：取消 + 提交（各表单弹窗统一）。 */
+export function FormFooter({
+  onCancel,
+  isPending,
+  label = "保存",
+}: {
+  onCancel: () => void;
+  isPending: boolean;
+  label?: string;
+}) {
+  return (
+    <div className="flex justify-end gap-2">
+      <Button variant="tertiary" onPress={onCancel}>
+        取消
+      </Button>
+      <SubmitButton isPending={isPending}>{label}</SubmitButton>
+    </div>
+  );
 }
 
 // ---- Buttons ----
@@ -271,14 +480,17 @@ export function RowButton({
 export function SubmitButton({
   isPending,
   isDisabled,
+  className,
   children,
-}: {
+  ...props
+}: Omit<ComponentProps<typeof Button>, "className" | "children"> & {
   isPending?: boolean;
   isDisabled?: boolean;
+  className?: string;
   children: ReactNode;
 }) {
   return (
-    <Button type="submit" isPending={isPending} isDisabled={isDisabled}>
+    <Button type="submit" isPending={isPending} isDisabled={isDisabled} className={className} {...props}>
       {({ isPending: pending }) => (
         <>
           {pending ? <Spinner size="sm" /> : null}

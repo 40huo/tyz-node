@@ -40,6 +40,7 @@ import {
 import type { Bindings } from "../env";
 import { adminAuth, clearSessionCookie, issueSessionCookie, verifyAdminCredentials } from "../middleware/adminAuth";
 import { listAudit, recordAudit } from "../services/audit";
+import { dashboardSummary, dashboardTraffic } from "../services/dashboard";
 import { broadcastNodeMessage, notifyConfigChanged } from "../services/notify";
 import { getActiveSubscriptions, quotaDecisionsForUsers, userQuotaSummary } from "../services/quota";
 import { getTlsDomain, getTlsStatus, setTlsDomain } from "../services/tls";
@@ -1051,6 +1052,18 @@ adminRoutes.put("/settings/tls-domain", async (c) => {
 adminRoutes.get("/audit", async (c) => {
   const limit = Math.min(Number(c.req.query("limit") ?? 100), 500);
   return c.json({ rows: await listAudit(c.env, limit) });
+});
+
+// ---- Dashboard (read-only aggregations for the panel front page) ----
+
+adminRoutes.get("/dashboard/summary", async (c) => {
+  return c.json(await dashboardSummary(createDb(c.env.DB)));
+});
+
+adminRoutes.get("/dashboard/traffic", async (c) => {
+  const hours = Math.min(Math.max(Number(c.req.query("hours") ?? 24), 1), 168);
+  const rows = await dashboardTraffic(createDb(c.env.DB), hours);
+  return c.json({ hours, rows });
 });
 
 adminRoutes.get("/packages", async (c) => {

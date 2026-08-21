@@ -1,39 +1,44 @@
-import { Button, Chip, Switch, Table } from "@heroui/react";
+import { Button, FieldError, Switch, Table } from "@heroui/react";
 import { IconPlus } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { NodeWithMeta } from "@tyz/shared";
 import {
   type Chain,
   ChainType,
   type CreateChainInput,
   type CreateTunnelInput,
   ForwardMode,
+  type NodeWithMeta,
   Transport,
   type Tunnel,
   type TunnelWithMeta,
-  type UpdateChainInput,
-  type UpdateTunnelInput,
 } from "@tyz/shared";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
+import { chainTypeLabel, forwardModeLabel } from "../labels";
 import {
   emptyState,
   type FormErrors,
+  FormFooter,
   FormModal,
   FormShell,
   fail,
   hasErrors,
+  ListToolbar,
   Mono,
   NumberForm,
   PageHeader,
   PageShell,
   RowButton,
+  SearchInput,
   SelectForm,
   SideDrawer,
-  SubmitButton,
+  StatusChip,
+  TableError,
   TableLoading,
   TextForm,
+  useCrudMutation,
   useFormValues,
 } from "../ui";
 
@@ -61,24 +66,11 @@ function TunnelDialog({
   opened: boolean;
   onClose: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["tunnels"] });
-
-  const createMutation = useMutation({
-    mutationFn: (input: CreateTunnelInput) => api.createTunnel(input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
-  });
-  const updateMutation = useMutation({
-    mutationFn: (input: UpdateTunnelInput) => api.updateTunnel(tunnel!.id, input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
+  const { save, isPending } = useCrudMutation({
+    invalidateKeys: [["tunnels"]],
+    create: (input: CreateTunnelInput) => api.createTunnel(input),
+    update: (id, input: CreateTunnelInput) => api.updateTunnel(id, input),
+    onClose,
   });
 
   return (
@@ -87,12 +79,9 @@ function TunnelDialog({
         <TunnelForm
           key={tunnel?.id ?? "create"}
           tunnel={tunnel}
-          submitting={createMutation.isPending || updateMutation.isPending}
+          submitting={isPending}
           onCancel={onClose}
-          onSubmit={(input) => {
-            if (tunnel === null) createMutation.mutate(input);
-            else updateMutation.mutate(input);
-          }}
+          onSubmit={(input) => save(tunnel?.id ?? null, input)}
         />
       )}
     </FormModal>
@@ -165,13 +154,18 @@ function TunnelForm({
         </p>
       ) : (
         <div className="flex flex-col gap-1">
-          <Switch isSelected={values.tls_enabled} onChange={(v) => set("tls_enabled", v)}>
+          <Switch
+            isSelected={values.tls_enabled}
+            onChange={(v) => set("tls_enabled", v)}
+            isInvalid={!!errors.tls_enabled}
+          >
             <Switch.Content>
               <Switch.Control>
                 <Switch.Thumb />
               </Switch.Control>
               TLS 加密链路（平台证书，双向验证）
             </Switch.Content>
+            {errors.tls_enabled ? <FieldError>{errors.tls_enabled}</FieldError> : null}
           </Switch>
           {values.tls_enabled ? (
             <p className="text-muted">
@@ -179,7 +173,6 @@ function TunnelForm({
               伪装域名。
             </p>
           ) : null}
-          {errors.tls_enabled ? <p className="text-danger text-sm">{errors.tls_enabled}</p> : null}
         </div>
       )}
       <TextForm
@@ -189,12 +182,7 @@ function TunnelForm({
         value={values.description}
         onChange={(v) => set("description", v)}
       />
-      <div className="flex justify-end gap-2">
-        <Button variant="tertiary" onPress={onCancel}>
-          取消
-        </Button>
-        <SubmitButton isPending={submitting}>保存</SubmitButton>
-      </div>
+      <FormFooter onCancel={onCancel} isPending={submitting} />
     </FormShell>
   );
 }
@@ -207,17 +195,6 @@ const CHAIN_TYPE_OPTIONS = [
   { value: ChainType.OUT, label: "出口 (out)" },
 ];
 const TRANSPORT_OPTIONS = Object.values(Transport).map((v) => ({ value: v, label: v }));
-
-const CHAIN_TYPE_COLOR: Record<string, "success" | "accent" | "danger"> = {
-  [ChainType.IN]: "success",
-  [ChainType.CHAIN]: "accent",
-  [ChainType.OUT]: "danger",
-};
-const CHAIN_TYPE_LABELS: Record<string, string> = {
-  [ChainType.IN]: "入口",
-  [ChainType.CHAIN]: "中继",
-  [ChainType.OUT]: "出口",
-};
 
 interface ChainFormValues {
   node_id: string | null;
@@ -261,27 +238,11 @@ function ChainDialog({
   opened: boolean;
   onClose: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ["chains", tunnelId] });
-    queryClient.invalidateQueries({ queryKey: ["tunnels"] });
-  };
-
-  const createMutation = useMutation({
-    mutationFn: (input: CreateChainInput) => api.createChain(input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
-  });
-  const updateMutation = useMutation({
-    mutationFn: (input: UpdateChainInput) => api.updateChain(chain!.id, input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
+  const { save, isPending } = useCrudMutation({
+    invalidateKeys: [["chains", tunnelId], ["tunnels"]],
+    create: (input: CreateChainInput) => api.createChain(input),
+    update: (id, input: CreateChainInput) => api.updateChain(id, input),
+    onClose,
   });
 
   return (
@@ -291,13 +252,9 @@ function ChainDialog({
           key={chain?.id ?? "create"}
           chain={chain}
           nodes={nodes}
-          submitting={createMutation.isPending || updateMutation.isPending}
+          submitting={isPending}
           onCancel={onClose}
-          onSubmit={(input) => {
-            const full = { ...input, tunnel_id: tunnelId };
-            if (chain === null) createMutation.mutate(full);
-            else updateMutation.mutate(full);
-          }}
+          onSubmit={(input) => save(chain?.id ?? null, { ...input, tunnel_id: tunnelId })}
         />
       )}
     </FormModal>
@@ -370,12 +327,7 @@ function ChainForm({
         />
       </div>
       <TextForm label="策略" placeholder="round" value={values.strategy} onChange={(v) => set("strategy", v)} />
-      <div className="flex justify-end gap-2">
-        <Button variant="tertiary" onPress={onCancel}>
-          取消
-        </Button>
-        <SubmitButton isPending={submitting}>保存</SubmitButton>
-      </div>
+      <FormFooter onCancel={onCancel} isPending={submitting} />
     </FormShell>
   );
 }
@@ -448,9 +400,9 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
                         </span>
                       </Table.Cell>
                       <Table.Cell>
-                        <Chip color={CHAIN_TYPE_COLOR[c.chain_type] ?? "default"} variant="soft" size="sm">
-                          <Chip.Label>{CHAIN_TYPE_LABELS[c.chain_type] ?? c.chain_type}</Chip.Label>
-                        </Chip>
+                        <StatusChip tone={chainTypeLabel(c.chain_type).tone} title={c.chain_type}>
+                          {chainTypeLabel(c.chain_type).label}
+                        </StatusChip>
                       </Table.Cell>
                       <Table.Cell>
                         <Mono>{c.transport}</Mono>
@@ -504,8 +456,10 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
 export default function TunnelsPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<TunnelWithMeta | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [searchParams] = useSearchParams();
+  const [creating, setCreating] = useState(searchParams.get("create") === "1");
   const [chainsOf, setChainsOf] = useState<TunnelWithMeta | null>(null);
+  const [search, setSearch] = useState("");
 
   const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
@@ -513,8 +467,17 @@ export default function TunnelsPage() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["tunnels"] });
   const deleteMutation = useMutation({ mutationFn: api.deleteTunnel, onSuccess: invalidate, onError: fail });
 
-  const tunnels = tunnelsQuery.data?.tunnels ?? [];
   const nodes = nodesQuery.data?.nodes ?? [];
+  const tunnels = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const all = tunnelsQuery.data?.tunnels ?? [];
+    if (!q) return all;
+    return all.filter((t) =>
+      [String(t.id), t.name, t.description ?? "", t.ingress_display_address ?? ""].some((field) =>
+        field.toLowerCase().includes(q),
+      ),
+    );
+  }, [tunnelsQuery.data, search]);
 
   return (
     <PageShell>
@@ -528,7 +491,12 @@ export default function TunnelsPage() {
           </Button>
         }
       />
-      {tunnelsQuery.isLoading ? (
+      <ListToolbar>
+        <SearchInput value={search} onChange={setSearch} placeholder="搜索隧道" />
+      </ListToolbar>
+      {tunnelsQuery.isError ? (
+        <TableError onRetry={() => tunnelsQuery.refetch()} />
+      ) : tunnelsQuery.isLoading ? (
         <TableLoading />
       ) : (
         <Table.ScrollContainer>
@@ -548,7 +516,10 @@ export default function TunnelsPage() {
                   <span className="flex justify-end">操作</span>
                 </Table.Column>
               </Table.Header>
-              <Table.Body items={tunnels} renderEmptyState={emptyState("暂无数据，点击「新建隧道」开始")}>
+              <Table.Body
+                items={tunnels}
+                renderEmptyState={emptyState(search ? "没有匹配的结果" : "暂无数据，点击「新建隧道」开始")}
+              >
                 {(t) => (
                   <Table.Row id={t.id}>
                     <Table.Cell>
@@ -559,17 +530,13 @@ export default function TunnelsPage() {
                     </Table.Cell>
                     <Table.Cell>
                       <div className="flex items-center gap-1">
-                        <Chip
-                          color={t.forward_mode === ForwardMode.RAW ? "accent" : "default"}
-                          variant="soft"
-                          size="sm"
-                        >
-                          <Chip.Label>{t.forward_mode === ForwardMode.RAW ? "裸转发" : "relay"}</Chip.Label>
-                        </Chip>
+                        <StatusChip tone={forwardModeLabel(t.forward_mode).tone} title={t.forward_mode}>
+                          {forwardModeLabel(t.forward_mode).label}
+                        </StatusChip>
                         {t.tls_enabled ? (
-                          <Chip color="success" variant="soft" size="sm">
-                            <Chip.Label>TLS</Chip.Label>
-                          </Chip>
+                          <StatusChip tone="success" title="链路 TLS（mTLS + 平台证书）">
+                            TLS
+                          </StatusChip>
                         ) : null}
                       </div>
                     </Table.Cell>

@@ -8,6 +8,8 @@ import type {
   CreateRuleInput,
   CreateTunnelInput,
   CreateUserInput,
+  DashboardSummary,
+  DashboardTrafficPoint,
   NodeStatsRow,
   NodeWithMeta,
   Package,
@@ -141,6 +143,10 @@ export const api = {
       }[];
     }>(`/api/admin/nodes/${id}/metrics?hours=${hours}`),
   listAudit: (limit = 100) => request<{ rows: AuditRow[] }>(`/api/admin/audit?limit=${limit}`),
+
+  dashboardSummary: () => request<DashboardSummary>("/api/admin/dashboard/summary"),
+  dashboardTraffic: (hours = 24) =>
+    request<{ hours: number; rows: DashboardTrafficPoint[] }>(`/api/admin/dashboard/traffic?hours=${hours}`),
 
   tlsStatus: () => request<TlsStatus>("/api/admin/tls/status"),
   setTlsDomain: (domain: string) =>

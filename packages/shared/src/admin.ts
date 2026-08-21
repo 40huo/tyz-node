@@ -236,3 +236,47 @@ export interface NodeStatsRow {
   stats: GostStatsSample;
   reported_at: string;
 }
+
+// ---- Dashboard ----
+
+/** GET /api/admin/dashboard/summary response body (read-only aggregation). */
+export interface DashboardSummary {
+  counts: {
+    nodes: number;
+    tunnels: number;
+    rules: {
+      total: number;
+      running: number;
+      paused: number;
+      created: number;
+      error: number;
+      /** Derived quota hard-stops (dropped from node configs), independent of status. */
+      quota_stopped: number;
+    };
+    users: { total: number; active: number; disabled: number; subscribed: number };
+  };
+  nodes_health: {
+    node_id: number;
+    name: string;
+    /** Services present in the node's latest health snapshot (0 = agent idle/offline). */
+    services: number;
+    ready: number;
+    /** failed + apply_failed states. */
+    failed: number;
+    /** Max concurrent connections across the node's services over the last 24h. */
+    conn_peak_24h: number;
+    last_report: string | null;
+  }[];
+  traffic: {
+    today: { upload: number; download: number };
+    yesterday: { upload: number; download: number };
+  };
+}
+
+/** GET /api/admin/dashboard/traffic row: hourly billed bytes, zero-filled across the window. */
+export interface DashboardTrafficPoint {
+  /** UTC hour bucket, '2026-08-21T04:00:00.000Z'. */
+  hour_ts: string;
+  billed_upload: number;
+  billed_download: number;
+}

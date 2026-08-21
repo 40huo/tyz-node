@@ -1,4 +1,4 @@
-import { Button, Chip, Table, toast } from "@heroui/react";
+import { Button, Table, toast } from "@heroui/react";
 import { IconPlus } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -11,41 +11,35 @@ import {
   type Tunnel,
   type UserListItem,
 } from "@tyz/shared";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
+import { quotaStopReasonLabel, ruleStatusLabel } from "../labels";
 import {
   emptyState,
+  FilterChips,
   type FormErrors,
+  FormFooter,
   FormModal,
   FormShell,
   fail,
   hasErrors,
+  ListToolbar,
   Mono,
   NumberForm,
   PageHeader,
   PageShell,
   RowButton,
+  SearchInput,
   SelectForm,
-  SubmitButton,
+  StatusChip,
+  TableError,
   TableLoading,
   TextForm,
+  useCrudMutation,
   useFormValues,
 } from "../ui";
-
-const STATUS_COLOR: Record<string, "success" | "warning" | "danger" | "default"> = {
-  created: "default",
-  paused: "warning",
-  running: "success",
-  error: "danger",
-};
-
-const QUOTA_STOP_LABELS: Record<string, string> = {
-  user_disabled: "用户禁用",
-  no_subscription: "无订阅",
-  expired: "已过期",
-  exhausted: "流量耗尽",
-};
 
 function validateLimitText(value: string): string | undefined {
   const text = value.trim();
@@ -114,24 +108,11 @@ function RuleDialog({
   opened: boolean;
   onClose: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["rules"] });
-
-  const createMutation = useMutation({
-    mutationFn: (input: CreateRuleInput) => api.createRule(input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
-  });
-  const updateMutation = useMutation({
-    mutationFn: (input: CreateRuleInput) => api.updateRule(rule!.id, input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
+  const { save, isPending } = useCrudMutation({
+    invalidateKeys: [["rules"]],
+    create: (input: CreateRuleInput) => api.createRule(input),
+    update: (id, input: CreateRuleInput) => api.updateRule(id, input),
+    onClose,
   });
 
   return (
@@ -147,12 +128,9 @@ function RuleDialog({
           rule={rule}
           tunnels={tunnels}
           users={users}
-          submitting={createMutation.isPending || updateMutation.isPending}
+          submitting={isPending}
           onCancel={onClose}
-          onSubmit={(input) => {
-            if (rule === null) createMutation.mutate(input);
-            else updateMutation.mutate(input);
-          }}
+          onSubmit={(input) => save(rule?.id ?? null, input)}
         />
       )}
     </FormModal>
@@ -215,7 +193,7 @@ function RuleForm({
         />
         <SelectForm
           label="状态"
-          options={Object.values(RelayRuleStatus).map((v) => ({ value: v, label: v }))}
+          options={Object.values(RelayRuleStatus).map((v) => ({ value: v, label: ruleStatusLabel(v).label }))}
           value={values.status}
           onChange={(v) => set("status", String(v))}
         />
@@ -276,22 +254,34 @@ function RuleForm({
         value={values.description}
         onChange={(v) => set("description", v)}
       />
-      <div className="flex justify-end gap-2">
-        <Button variant="tertiary" onPress={onCancel}>
-          取消
-        </Button>
-        <SubmitButton isPending={submitting}>保存</SubmitButton>
-      </div>
+      <FormFooter onCancel={onCancel} isPending={submitting} />
     </FormShell>
   );
 }
 
 // ---- Page ----
 
+type RuleFilter = "all" | "created" | "paused" | "running" | "error" | "quota_stopped";
+
+const RULE_FILTERS: { value: RuleFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "running", label: "运行中" },
+  { value: "paused", label: "已暂停" },
+  { value: "created", label: "已创建" },
+  { value: "error", label: "错误" },
+  { value: "quota_stopped", label: "配额停用" },
+];
+
 export default function RulesPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<RelayRule | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [searchParams] = useSearchParams();
+  const [creating, setCreating] = useState(searchParams.get("create") === "1");
+  const initialFilter = RULE_FILTERS.some((f) => f.value === searchParams.get("status"))
+    ? (searchParams.get("status") as RuleFilter)
+    : "all";
+  const [filter, setFilter] = useState<RuleFilter>(initialFilter);
+  const [search, setSearch] = useState("");
 
   const rulesQuery = useQuery({ queryKey: ["rules"], queryFn: api.listRules });
   const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
@@ -309,6 +299,32 @@ export default function RulesPage() {
   const users = usersQuery.data?.users ?? [];
   const rules: AdminRuleRow[] = rulesQuery.data?.rules ?? [];
 
+  const counts = useMemo(() => {
+    const by: Record<RuleFilter, number> = {
+      all: rules.length,
+      created: 0,
+      paused: 0,
+      running: 0,
+      error: 0,
+      quota_stopped: 0,
+    };
+    for (const r of rules) {
+      by[r.status as RuleFilter] = (by[r.status as RuleFilter] ?? 0) + 1;
+      if (r.quota_stopped) by.quota_stopped += 1;
+    }
+    return by;
+  }, [rules]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return rules.filter((r) => {
+      const statusOk = filter === "all" ? true : filter === "quota_stopped" ? !!r.quota_stopped : r.status === filter;
+      if (!statusOk) return false;
+      if (!q) return true;
+      return [String(r.id), r.name, r.targets, String(r.listen_port)].some((field) => field.toLowerCase().includes(q));
+    });
+  }, [rules, filter, search]);
+
   return (
     <PageShell>
       <PageHeader
@@ -321,7 +337,17 @@ export default function RulesPage() {
           </Button>
         }
       />
-      {rulesQuery.isLoading ? (
+      <ListToolbar>
+        <SearchInput value={search} onChange={setSearch} placeholder="搜索规则 / 端口 / 目标" />
+        <FilterChips
+          options={RULE_FILTERS.map((f) => ({ ...f, count: counts[f.value] }))}
+          value={filter}
+          onChange={setFilter}
+        />
+      </ListToolbar>
+      {rulesQuery.isError ? (
+        <TableError onRetry={() => rulesQuery.refetch()} />
+      ) : rulesQuery.isLoading ? (
         <TableLoading />
       ) : (
         <Table.ScrollContainer>
@@ -349,7 +375,12 @@ export default function RulesPage() {
                   <span className="flex justify-end">操作</span>
                 </Table.Column>
               </Table.Header>
-              <Table.Body items={rules} renderEmptyState={emptyState("暂无数据，点击「新建规则」开始")}>
+              <Table.Body
+                items={filtered}
+                renderEmptyState={emptyState(
+                  search || filter !== "all" ? "没有匹配的结果" : "暂无数据，点击「新建规则」开始",
+                )}
+              >
                 {(r) => (
                   <Table.Row id={r.id}>
                     <Table.Cell>
@@ -383,20 +414,16 @@ export default function RulesPage() {
                     </Table.Cell>
                     <Table.Cell>
                       <div className="flex items-center gap-1">
-                        <Chip color={STATUS_COLOR[r.status] ?? "default"} variant="soft" size="sm">
-                          <Chip.Label>{r.status}</Chip.Label>
-                        </Chip>
+                        <StatusChip tone={ruleStatusLabel(r.status).tone} title={r.status}>
+                          {ruleStatusLabel(r.status).label}
+                        </StatusChip>
                         {r.quota_stopped && (
-                          <Chip
-                            color="danger"
-                            variant="soft"
-                            size="sm"
-                            title={`配额硬停：该规则已从节点配置中剔除（原因：${QUOTA_STOP_LABELS[r.quota_reason ?? ""] ?? r.quota_reason}）`}
+                          <StatusChip
+                            tone="danger"
+                            title={`配额硬停：该规则已从节点配置中剔除（原因：${quotaStopReasonLabel(r.quota_reason).label}）`}
                           >
-                            <Chip.Label>
-                              配额停用 · {QUOTA_STOP_LABELS[r.quota_reason ?? ""] ?? r.quota_reason}
-                            </Chip.Label>
-                          </Chip>
+                            配额停用 · {quotaStopReasonLabel(r.quota_reason).label}
+                          </StatusChip>
                         )}
                       </div>
                     </Table.Cell>

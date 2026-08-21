@@ -17,3 +17,11 @@
     font-family: var(--font-sans);
   }
 }
+
+/* 流量趋势图（Dashboard）：recharts 会把 Area 的 style 透传到填充+描边两条 path，
+   内联 style 承载主题 token（presentation attribute 不支持 var()）。这里取消填充
+   路径误继承的描边——内联 style 只能被 !important 的样式表规则覆盖。 */
+/* biome-ignore lint/complexity/noImportantStyles: 覆盖 recharts 透传的内联 style，无法避免 */
+.recharts-area-area {
+  stroke: none !important;
+}

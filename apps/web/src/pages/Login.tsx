@@ -1,13 +1,14 @@
-import { Button, Card, toast } from "@heroui/react";
+import { Card, toast } from "@heroui/react";
 import { type FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { FormShell, fail, TextForm } from "../ui";
+import { FormShell, fail, SubmitButton, TextForm } from "../ui";
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const [values, setValues] = useState({ username: "", password: "" });
   const [errors, setErrors] = useState<{ username?: string; password?: string }>({});
+  const [pending, setPending] = useState(false);
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -17,11 +18,14 @@ export default function LoginPage() {
     setErrors(errs);
     if (errs.username || errs.password) return;
     try {
+      setPending(true);
       await api.login(values.username, values.password);
       toast.success("登录成功");
       navigate("/");
     } catch (error) {
       fail(error);
+    } finally {
+      setPending(false);
     }
   };
 
@@ -52,9 +56,9 @@ export default function LoginPage() {
               onChange={(v) => setValues((s) => ({ ...s, password: v }))}
               error={errors.password}
             />
-            <Button type="submit" size="lg" fullWidth>
+            <SubmitButton size="lg" fullWidth isPending={pending}>
               登录
-            </Button>
+            </SubmitButton>
           </FormShell>
         </Card.Content>
       </Card>
