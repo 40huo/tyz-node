@@ -73,3 +73,17 @@ func allocatePortForChain(nodePorts string, chainID, nodeID int) (int, error) {
 	}
 	return start + (chainID+nodeID)%(end-start+1), nil
 }
+
+// allocatePortForRule maps a raw-mode rule to its dedicated exit port inside
+// the node's port range: start + ((ruleID*31 + nodeID) % range). The ruleID
+// multiplier keeps raw-rule allocations from aliasing chain allocations
+// (which hash chainID + nodeID) for small IDs. Deterministic on both ends:
+// the exit listens on it, the entry dials it — no coordination needed.
+// Collisions with other allocations surface as apply_failed service health.
+func allocatePortForRule(nodePorts string, ruleID, nodeID int) (int, error) {
+	start, end, err := parsePortRange(nodePorts)
+	if err != nil {
+		return 0, err
+	}
+	return start + (ruleID*31+nodeID)%(end-start+1), nil
+}

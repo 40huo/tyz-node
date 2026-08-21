@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { ChainType, RelayRuleStatus, Transport, UserStatus } from "./entities";
+import { ChainType, ForwardMode, RelayRuleStatus, Transport, UserStatus } from "./entities";
 
 export const chainTypeSchema = z.nativeEnum(ChainType);
 export const transportSchema = z.nativeEnum(Transport);
+export const forwardModeSchema = z.nativeEnum(ForwardMode);
 export const relayRuleStatusSchema = z.nativeEnum(RelayRuleStatus);
 export const userStatusSchema = z.nativeEnum(UserStatus);
 
@@ -55,6 +56,15 @@ export const tlsConfigSchema = z.object({
   organization: z.string().optional(),
 });
 
+export const tlsMaterialSchema = z.object({
+  sni: z.string().min(1),
+  ca_cert: z.string().min(1),
+  server_cert: z.string().min(1),
+  server_key: z.string().min(1),
+  client_cert: z.string().min(1),
+  client_key: z.string().min(1),
+});
+
 // ---- Agent-facing payloads (config delivered to a node) ----
 
 export const relayNodePayloadSchema = z.object({
@@ -77,11 +87,18 @@ export const relayNodePayloadSchema = z.object({
   updated_at: z.string(),
 });
 
+// The agent payload carries relay_auth_user/relay_auth_pass on top of the
+// admin-visible Tunnel entity (the builder needs them for the relay protocol
+// AuthConfig). New fields are optional: legacy cached payloads lack them.
 export const tunnelSchema = z.object({
   id: z.number().int(),
   name: z.string(),
   description: z.string().optional(),
   ingress_display_address: z.string().optional(),
+  forward_mode: forwardModeSchema.optional(),
+  tls_enabled: z.boolean().optional(),
+  relay_auth_user: z.string().optional(),
+  relay_auth_pass: z.string().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -108,6 +125,7 @@ export const relayRuleSchema = z.object({
   user_id: z.number().int().positive().optional(),
   targets: z.string(),
   status: relayRuleStatusSchema,
+  exit_port: z.number().int().min(0).max(65535).optional(),
   limit: limiterConfigSchema.nullable().optional(),
   quota: z
     .object({
@@ -130,6 +148,7 @@ export const nodeConfigDataSchema = z.object({
   tunnels: z.array(tunnelSchema),
   chains: z.array(chainSchema),
   tls: tlsConfigSchema.optional(),
+  tls_material: tlsMaterialSchema.optional(),
 });
 
 // ---- Agent stats reporting ----

@@ -1,10 +1,12 @@
 import { z } from "zod";
 import {
+  ForwardMode,
   type Package,
   type RelayNode,
   type RelayRule,
   RelayRuleStatus,
   type RuleQuota,
+  type Tunnel,
   type User,
   UserStatus,
   type UserSubscription,
@@ -12,6 +14,7 @@ import {
 import type { GostStatsSample } from "./schemas";
 import {
   chainTypeSchema,
+  forwardModeSchema,
   limiterConfigSchema,
   relayRuleStatusSchema,
   transportSchema,
@@ -72,10 +75,22 @@ export const createTunnelSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   ingress_display_address: z.string().optional(),
+  forward_mode: forwardModeSchema.default(ForwardMode.RELAY),
+  tls_enabled: z.boolean().default(false),
 });
 export const updateTunnelSchema = createTunnelSchema.partial();
 export type CreateTunnelInput = z.infer<typeof createTunnelSchema>;
 export type UpdateTunnelInput = z.infer<typeof updateTunnelSchema>;
+
+/**
+ * Tunnel as listed by the admin panel: entity + derived chain count. The
+ * count drives the effective-mode display — a single-hop tunnel (one `in`
+ * chain, no exit) always renders as direct tcp forwarding regardless of the
+ * stored forward_mode, so the panel shows it as 裸转发 instead of relay.
+ */
+export interface TunnelWithMeta extends Tunnel {
+  chain_count: number;
+}
 
 // ---- Chain CRUD ----
 
@@ -102,6 +117,8 @@ export const createRuleSchema = z.object({
   targets: z.string().min(1),
   user_id: z.number().int().positive().nullable().optional(),
   status: relayRuleStatusSchema.default(RelayRuleStatus.CREATED),
+  /** raw-mode tunnels: dedicated exit-side port. 0 = auto-allocate. */
+  exit_port: z.number().int().min(0).max(65535).default(0),
   limit: limiterConfigSchema.nullable().optional(),
 });
 export const updateRuleSchema = createRuleSchema.partial();
@@ -138,6 +155,26 @@ export const subscribeSchema = z.object({
   package_id: z.number().int().positive(),
 });
 export type SubscribeInput = z.infer<typeof subscribeSchema>;
+
+// ---- Link TLS (platform-issued certs) ----
+
+export const setTlsDomainSchema = z.object({
+  domain: z
+    .string()
+    .min(1)
+    .regex(/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/, {
+      message: "必须是合法域名，如 relay.example.com",
+    }),
+});
+export type SetTlsDomainInput = z.infer<typeof setTlsDomainSchema>;
+
+/** GET /tls/status response body — expiry metadata only, never key material. */
+export interface TlsStatus {
+  domain: string | null;
+  ca_not_after: string | null;
+  server_not_after: string | null;
+  client_not_after: string | null;
+}
 
 /** Rule row as listed by the admin panel, with the derived quota state of its owner. */
 export interface AdminRuleRow extends RelayRule {

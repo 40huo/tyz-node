@@ -1,4 +1,4 @@
-import { Button, Chip, Table } from "@heroui/react";
+import { Button, Chip, Switch, Table } from "@heroui/react";
 import { IconPlus } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { NodeWithMeta } from "@tyz/shared";
@@ -7,8 +7,10 @@ import {
   ChainType,
   type CreateChainInput,
   type CreateTunnelInput,
+  ForwardMode,
   Transport,
   type Tunnel,
+  type TunnelWithMeta,
   type UpdateChainInput,
   type UpdateTunnelInput,
 } from "@tyz/shared";
@@ -37,13 +39,28 @@ import {
 
 // ---- Tunnel form ----
 
+const FORWARD_MODE_OPTIONS = [
+  { value: ForwardMode.RELAY, label: "relay 端口复用（默认）" },
+  { value: ForwardMode.RAW, label: "裸转发（每规则独立端口）" },
+];
+
 interface TunnelFormValues {
   name: string;
   ingress_display_address: string;
   description: string;
+  forward_mode: string;
+  tls_enabled: boolean;
 }
 
-function TunnelDialog({ tunnel, opened, onClose }: { tunnel: Tunnel | null; opened: boolean; onClose: () => void }) {
+function TunnelDialog({
+  tunnel,
+  opened,
+  onClose,
+}: {
+  tunnel: TunnelWithMeta | null;
+  opened: boolean;
+  onClose: () => void;
+}) {
   const queryClient = useQueryClient();
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["tunnels"] });
 
@@ -88,7 +105,7 @@ function TunnelForm({
   submitting,
   onCancel,
 }: {
-  tunnel: Tunnel | null;
+  tunnel: TunnelWithMeta | null;
   onSubmit: (input: CreateTunnelInput) => void;
   submitting: boolean;
   onCancel: () => void;
@@ -97,19 +114,30 @@ function TunnelForm({
     name: tunnel?.name ?? "",
     ingress_display_address: tunnel?.ingress_display_address ?? "",
     description: tunnel?.description ?? "",
+    forward_mode: (tunnel?.forward_mode ?? ForwardMode.RELAY) as string,
+    tls_enabled: tunnel?.tls_enabled ?? false,
   }));
   const [errors, setErrors] = useState<FormErrors<TunnelFormValues>>({});
+  // A single-hop tunnel (one `in` chain, no exit node) renders identically
+  // for both modes (direct tcp forwarding); the stored value is kept as the
+  // operator picks it. TLS needs the 2-hop shape, so it stays hidden.
+  const singleHop = (tunnel?.chain_count ?? 0) === 1;
 
   const onSubmitForm = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const errs: FormErrors<TunnelFormValues> = {};
     if (!values.name.trim()) errs.name = "请输入名称";
+    if (values.forward_mode === ForwardMode.RAW && values.tls_enabled) {
+      errs.tls_enabled = "裸转发不支持 TLS（链路即纯 TCP）";
+    }
     setErrors(errs);
     if (hasErrors(errs)) return;
     onSubmit({
       name: values.name,
       ingress_display_address: values.ingress_display_address || undefined,
       description: values.description || undefined,
+      forward_mode: values.forward_mode as ForwardMode,
+      tls_enabled: values.tls_enabled,
     });
   };
 
@@ -122,6 +150,38 @@ function TunnelForm({
         value={values.ingress_display_address}
         onChange={(v) => set("ingress_display_address", v)}
       />
+      <SelectForm
+        label="转发模式"
+        options={FORWARD_MODE_OPTIONS}
+        value={values.forward_mode}
+        onChange={(v) => set("forward_mode", String(v))}
+        hint={
+          singleHop ? "单节点隧道两种模式生成的配置相同（直连转发）；添加出口链路后模式才会产生实际区别" : undefined
+        }
+      />
+      {singleHop ? null : values.forward_mode === ForwardMode.RAW ? (
+        <p className="text-muted">
+          裸转发：不使用 relay 协议、无端口复用——每条规则在两端各占一个独立 TCP 端口，链路上无任何自定义协议特征。
+        </p>
+      ) : (
+        <div className="flex flex-col gap-1">
+          <Switch isSelected={values.tls_enabled} onChange={(v) => set("tls_enabled", v)}>
+            <Switch.Content>
+              <Switch.Control>
+                <Switch.Thumb />
+              </Switch.Control>
+              TLS 加密链路（平台证书，双向验证）
+            </Switch.Content>
+          </Switch>
+          {values.tls_enabled ? (
+            <p className="text-muted">
+              出口链路的传输需为 grpc 或 tls（grpc 走 TLS1.3 + h2，外观为普通 gRPC 流量）。启用前请先在设置中配置 TLS
+              伪装域名。
+            </p>
+          ) : null}
+          {errors.tls_enabled ? <p className="text-danger text-sm">{errors.tls_enabled}</p> : null}
+        </div>
+      )}
       <TextForm
         label="描述"
         multiline
@@ -202,7 +262,10 @@ function ChainDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["chains", tunnelId] });
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["chains", tunnelId] });
+    queryClient.invalidateQueries({ queryKey: ["tunnels"] });
+  };
 
   const createMutation = useMutation({
     mutationFn: (input: CreateChainInput) => api.createChain(input),
@@ -325,7 +388,12 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
   const [creating, setCreating] = useState(false);
 
   const chainsQuery = useQuery({ queryKey: ["chains", tunnel.id], queryFn: () => api.tunnelChains(tunnel.id) });
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["chains", tunnel.id] });
+  // Chain changes also affect the tunnel list's derived mode display
+  // (chain_count) — refresh both.
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["chains", tunnel.id] });
+    queryClient.invalidateQueries({ queryKey: ["tunnels"] });
+  };
   const deleteMutation = useMutation({ mutationFn: api.deleteChain, onSuccess: invalidate, onError: fail });
 
   const chains = chainsQuery.data?.chains ?? [];
@@ -435,9 +503,9 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
 
 export default function TunnelsPage() {
   const queryClient = useQueryClient();
-  const [editing, setEditing] = useState<Tunnel | null>(null);
+  const [editing, setEditing] = useState<TunnelWithMeta | null>(null);
   const [creating, setCreating] = useState(false);
-  const [chainsOf, setChainsOf] = useState<Tunnel | null>(null);
+  const [chainsOf, setChainsOf] = useState<TunnelWithMeta | null>(null);
 
   const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
@@ -471,6 +539,9 @@ export default function TunnelsPage() {
                   ID
                 </Table.Column>
                 <Table.Column id="name">名称</Table.Column>
+                <Table.Column id="mode" defaultWidth={150}>
+                  模式
+                </Table.Column>
                 <Table.Column id="ingress">入口地址</Table.Column>
                 <Table.Column id="description">描述</Table.Column>
                 <Table.Column id="actions" defaultWidth={190}>
@@ -485,6 +556,22 @@ export default function TunnelsPage() {
                     </Table.Cell>
                     <Table.Cell>
                       <span className="font-medium">{t.name}</span>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <div className="flex items-center gap-1">
+                        <Chip
+                          color={t.forward_mode === ForwardMode.RAW ? "accent" : "default"}
+                          variant="soft"
+                          size="sm"
+                        >
+                          <Chip.Label>{t.forward_mode === ForwardMode.RAW ? "裸转发" : "relay"}</Chip.Label>
+                        </Chip>
+                        {t.tls_enabled ? (
+                          <Chip color="success" variant="soft" size="sm">
+                            <Chip.Label>TLS</Chip.Label>
+                          </Chip>
+                        ) : null}
+                      </div>
                     </Table.Cell>
                     <Table.Cell>{t.ingress_display_address ?? <span className="text-muted">-</span>}</Table.Cell>
                     <Table.Cell>

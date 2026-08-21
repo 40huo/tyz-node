@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Local end-to-end test for the two relay scenarios:
+# Local end-to-end test for the relay scenarios:
 #   1. single-node direct forward (tunnel-1: entry :8080 -> example.com:80)
 #   2. two-node relay with a shared exit port (tunnel-2: two entry services
 #      :16535/:16548 -> node-2's single relay listener :16900 -> per-rule
 #      targets). One exit port serves every rule of the tunnel because the
 #      relay protocol carries each connection's destination in-band.
+#   3. two-node RAW forward (tunnel-3): no relay protocol — each rule is a
+#      dedicated tcp port pair (entry :16556/:16557 -> exit :26556/:26557).
+#   4. two-node relay + TLS (tunnel-4): shared exit listener :16901 wrapped in
+#      TLS1.3/h2 (grpc) with platform certs, mTLS + relay auth + entry-IP
+#      admission — the censorship-evasion link shape.
 #
 # Prerequisites: bun, go, python3, and wrangler dev running on :8787 with the
 # apps/server .dev.vars + local seed applied. The script re-applies the seed,
@@ -61,7 +66,7 @@ wait_port_free() { # port
 echo "== cleaning up leftovers from previous runs =="
 pkill -x tyz-agent 2>/dev/null || true
 pkill -f "http.server 191[0-9][0-9]" 2>/dev/null || true
-for port in 18091 18092 16900 16535 16548 19180 19181; do wait_port_free "$port"; done
+for port in 18091 18092 16900 16901 16535 16548 16556 16557 16558 16559 26556 26557 19180 19181; do wait_port_free "$port"; done
 
 echo "== starting local HTTP targets (19180/19181) =="
 start_target target-one 19180
@@ -85,8 +90,9 @@ wait_http() { # url timeout_s
 echo "== waiting for agents and listeners =="
 wait_http http://127.0.0.1:18092/healthz 20 || { FAILED=1; echo "FAIL: exit agent health"; tail -5 "$WORK/exit.log"; exit 1; }
 wait_http http://127.0.0.1:18091/healthz 20 || { FAILED=1; echo "FAIL: entry agent health"; tail -5 "$WORK/entry.log"; exit 1; }
-wait_http http://127.0.0.1:16535/ 20 || { FAILED=1; echo "FAIL: entry :16535 not listening"; tail -20 "$WORK/entry.log"; exit 1; }
-wait_http http://127.0.0.1:16548/ 20 || { FAILED=1; echo "FAIL: entry :16548 not listening"; tail -20 "$WORK/entry.log"; exit 1; }
+for port in 16535 16548 16556 16557 16558 16559; do
+  wait_http "http://127.0.0.1:$port/" 20 || { FAILED=1; echo "FAIL: entry :$port not listening"; tail -20 "$WORK/entry.log"; exit 1; }
+done
 
 echo "== assertions =="
 body_one="$(curl -sf -m 8 http://127.0.0.1:16535/)"
@@ -94,6 +100,37 @@ body_two="$(curl -sf -m 8 http://127.0.0.1:16548/)"
 [ "$body_one" = "target-one" ] || { FAILED=1; echo "FAIL: :16535 returned '$body_one', want 'target-one'"; exit 1; }
 [ "$body_two" = "target-two" ] || { FAILED=1; echo "FAIL: :16548 returned '$body_two', want 'target-two'"; exit 1; }
 echo "PASS: two-node relay — both entry rules reach distinct targets through the shared exit relay :16900"
+
+# Raw forward (tunnel-3): the exit side runs one tcp service per rule on
+# :26556/:26557; the entry forwards straight to those ports (no relay bytes).
+raw_one="$(curl -sf -m 8 http://127.0.0.1:16556/)"
+raw_two="$(curl -sf -m 8 http://127.0.0.1:16557/)"
+[ "$raw_one" = "target-one" ] || { FAILED=1; echo "FAIL: raw :16556 returned '$raw_one', want 'target-one'"; exit 1; }
+[ "$raw_two" = "target-two" ] || { FAILED=1; echo "FAIL: raw :16557 returned '$raw_two', want 'target-two'"; exit 1; }
+ss -ltn 'sport = :26556' | grep -q LISTEN || { FAILED=1; echo "FAIL: raw exit :26556 not listening"; exit 1; }
+echo "PASS: raw forward — per-rule port pairs 16556->26556 / 16557->26557 (no relay protocol)"
+
+# Relay + TLS (tunnel-4): grpc/TLS1.3/h2 shared exit listener :16901 with
+# platform certs, mTLS, relay auth and admission. A plain-TCP probe must be
+# rejected (TLS required), the real entry path must return the targets.
+tls_one="$(curl -sf -m 10 http://127.0.0.1:16558/)"
+tls_two="$(curl -sf -m 10 http://127.0.0.1:16559/)"
+[ "$tls_one" = "target-one" ] || { FAILED=1; echo "FAIL: tls :16558 returned '$tls_one', want 'target-one'"; exit 1; }
+[ "$tls_two" = "target-two" ] || { FAILED=1; echo "FAIL: tls :16559 returned '$tls_two', want 'target-two'"; exit 1; }
+if printf 'GET / HTTP/1.0\r\n\r\n' | timeout 3 python3 -c '
+import socket, sys
+s = socket.create_connection(("127.0.0.1", 16901), timeout=2)
+s.sendall(sys.stdin.buffer.read())
+try:
+    data = s.recv(64)
+except OSError:
+    sys.exit(0)  # connection reset also proves plaintext is refused
+sys.exit(0 if not data.startswith(b"HTTP") else 1)
+'; then
+  echo "PASS: relay+TLS — plaintext probe on :16901 refused, entry rules flow over the TLS link"
+else
+  FAILED=1; echo "FAIL: :16901 answered plaintext HTTP (TLS not enforced?)"; exit 1
+fi
 
 single="$(curl -sf -m 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ || true)"
 if [ "$single" != "000" ]; then

@@ -41,6 +41,7 @@ const NAV_ITEMS = [
 ];
 
 const SETTINGS_ITEMS = [
+  { to: "/settings/tls", label: "链路 TLS" },
   { to: "/settings/basic", label: "基础设置" },
   { to: "/settings/notification", label: "通知设置" },
   { to: "/settings/announcement", label: "公告设置" },
@@ -57,6 +58,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/rules": "转发规则",
   "/users": "用户管理",
   "/packages": "套餐管理",
+  "/settings/tls": "链路 TLS",
   "/settings/basic": "基础设置",
   "/settings/notification": "通知设置",
   "/settings/announcement": "公告设置",
@@ -280,6 +282,7 @@ export default function App() {
         <Route path="rules" element={<RulesPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="packages" element={<PackagesPage />} />
+        <Route path="settings/tls" element={<SettingsPage kind="tls" />} />
         <Route path="settings/basic" element={<SettingsPage kind="basic" />} />
         <Route path="settings/notification" element={<SettingsPage kind="notification" />} />
         <Route path="settings/announcement" element={<SettingsPage kind="announcement" />} />

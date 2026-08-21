@@ -25,6 +25,7 @@ import (
 
 	"github.com/laoshan-tech/tyz-node/apps/agent/internal/agentcfg"
 	"github.com/laoshan-tech/tyz-node/apps/agent/internal/builder"
+	"github.com/laoshan-tech/tyz-node/apps/agent/internal/certs"
 	"github.com/laoshan-tech/tyz-node/apps/agent/internal/cp"
 	"github.com/laoshan-tech/tyz-node/apps/agent/internal/gostapply"
 	"github.com/laoshan-tech/tyz-node/apps/agent/internal/loop"
@@ -88,6 +89,13 @@ func run() error {
 		// control plane stores the latest state per service.
 		Health: applier.HealthSnapshot,
 		Apply: func(data *model.NodeConfigData) error {
+			// Platform link TLS material must be on disk BEFORE Build output is
+			// applied — GOST resolves the cert paths at service parse time.
+			// No-op when the payload carries no material (and for unchanged
+			// content).
+			if err := certs.Ensure(".", data.TLSMaterial); err != nil {
+				return fmt.Errorf("persist tls material: %w", err)
+			}
 			gostConfig, err := builder.Build(data)
 			if err != nil {
 				return fmt.Errorf("build gost config: %w", err)

@@ -24,11 +24,13 @@ import (
 	"sort"
 	"sync"
 
+	coreadmission "github.com/go-gost/core/admission"
 	corechain "github.com/go-gost/core/chain"
 	corelogger "github.com/go-gost/core/logger"
 	coregistry "github.com/go-gost/core/registry"
 	coreservice "github.com/go-gost/core/service"
 	"github.com/go-gost/x/config"
+	admission_parser "github.com/go-gost/x/config/parsing/admission"
 	chain_parser "github.com/go-gost/x/config/parsing/chain"
 	limiter_parser "github.com/go-gost/x/config/parsing/limiter"
 	quota_parser "github.com/go-gost/x/config/parsing/quota"
@@ -87,16 +89,26 @@ func (a *Applier) Apply(desired *config.Config) error {
 	if err != nil {
 		return err
 	}
+	stagedAdmissions, err := a.stageAdmissions(last.Admissions, desired.Admissions)
+	if err != nil {
+		return err
+	}
 
-	// Delete phase, top-down.
+	// Delete phase, top-down. Admissions go LAST: ParseService resolves them
+	// by name, so a referencing service must be gone before its admission is.
 	a.deleteKind("services", keySet(registry.ServiceRegistry().GetAll()), desiredSet(serviceNames(desired)))
 	a.deleteKind("chains", keySet(registry.ChainRegistry().GetAll()), desiredSet(chainNames(desired)))
 	a.deleteKind("quotas", keySet(registry.QuotaLimiterRegistry().GetAll()), desiredSet(quotaNames(desired)))
 	a.deleteKind("climiters", keySet(registry.ConnLimiterRegistry().GetAll()), desiredSet(limiterNames(desired.CLimiters)))
 	a.deleteKind("rlimiters", keySet(registry.RateLimiterRegistry().GetAll()), desiredSet(limiterNames(desired.RLimiters)))
 	a.deleteKind("limiters", keySet(registry.TrafficLimiterRegistry().GetAll()), desiredSet(limiterNames(desired.Limiters)))
+	a.deleteKind("admissions", keySet(registry.AdmissionRegistry().GetAll()), desiredSet(admissionNames(desired)))
 
-	// Create/update phase, bottom-up.
+	// Create/update phase, bottom-up. Admissions go FIRST for the same name
+	// resolution reason: a (re)built service parses against the registry.
+	if err := a.registerAdmissions(stagedAdmissions); err != nil {
+		return err
+	}
 	if err := reconcileLimiters("limiters", registry.TrafficLimiterRegistry(), limiter_parser.ParseTrafficLimiter, last.Limiters, desired.Limiters, a.log); err != nil {
 		return err
 	}
@@ -248,6 +260,8 @@ func (a *Applier) deleteKind(kind string, current, desired map[string]struct{}) 
 			registry.RateLimiterRegistry().Unregister(name)
 		case "limiters":
 			registry.TrafficLimiterRegistry().Unregister(name)
+		case "admissions":
+			registry.AdmissionRegistry().Unregister(name)
 		}
 		a.log.Debug("GOST object deleted", "kind", kind, "name", name)
 	}
@@ -319,6 +333,43 @@ func (a *Applier) registerChains(staged []stagedChain) error {
 			return fmt.Errorf("register chains %q: %w", s.cfg.Name, err)
 		}
 		a.log.Debug("GOST object updated", "kind", "chains", "name", s.cfg.Name)
+	}
+	return nil
+}
+
+// stagedAdmission is one parsed admission waiting to be registered.
+type stagedAdmission struct {
+	cfg *config.AdmissionConfig
+	adm coreadmission.Admission
+}
+
+// stageAdmissions parses every desired admission needing create/update —
+// part of the validation pass, before any mutation.
+func (a *Applier) stageAdmissions(last, desired []*config.AdmissionConfig) ([]stagedAdmission, error) {
+	reg := registry.AdmissionRegistry()
+	var staged []stagedAdmission
+	for _, cfg := range desired {
+		exists := reg.IsRegistered(cfg.Name)
+		if exists && containsEqual(last, cfg) {
+			continue
+		}
+		// ParseAdmission returns nil admission for an unparseable matcher
+		// list; an explicitly empty name/config would surface on first use.
+		staged = append(staged, stagedAdmission{cfg: cfg, adm: admission_parser.ParseAdmission(cfg)})
+	}
+	return staged, nil
+}
+
+func (a *Applier) registerAdmissions(staged []stagedAdmission) error {
+	reg := registry.AdmissionRegistry()
+	for _, s := range staged {
+		if reg.IsRegistered(s.cfg.Name) {
+			reg.Unregister(s.cfg.Name)
+		}
+		if err := reg.Register(s.cfg.Name, s.adm); err != nil {
+			return fmt.Errorf("register admissions %q: %w", s.cfg.Name, err)
+		}
+		a.log.Debug("GOST object updated", "kind", "admissions", "name", s.cfg.Name)
 	}
 	return nil
 }
@@ -462,6 +513,14 @@ func serviceNames(cfg *config.Config) []string {
 	out := make([]string, len(cfg.Services))
 	for i, s := range cfg.Services {
 		out[i] = s.Name
+	}
+	return out
+}
+
+func admissionNames(cfg *config.Config) []string {
+	out := make([]string, len(cfg.Admissions))
+	for i, a := range cfg.Admissions {
+		out[i] = a.Name
 	}
 	return out
 }

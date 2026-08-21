@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type AdminRuleRow,
   type CreateRuleInput,
+  ForwardMode,
   limiterConfigSchema,
   type RelayRule,
   RelayRuleStatus,
@@ -70,6 +71,7 @@ interface RuleFormValues {
   description: string;
   tunnel_id: string | null;
   user_id: string | null;
+  exit_port: number;
   limitText: string;
 }
 
@@ -82,6 +84,7 @@ function ruleFormValues(rule: RelayRule | null): RuleFormValues {
         tunnel_id: rule.tunnel_id === undefined ? null : String(rule.tunnel_id),
         user_id: rule.user_id === undefined ? null : String(rule.user_id),
         status: rule.status,
+        exit_port: rule.exit_port ?? 0,
         limitText: rule.limit ? JSON.stringify(rule.limit, null, 2) : "",
         description: rule.description ?? "",
       }
@@ -92,6 +95,7 @@ function ruleFormValues(rule: RelayRule | null): RuleFormValues {
         tunnel_id: null,
         user_id: null,
         status: RelayRuleStatus.CREATED,
+        exit_port: 0,
         limitText: "",
         description: "",
       };
@@ -192,6 +196,7 @@ function RuleForm({
       description: values.description || undefined,
       tunnel_id: values.tunnel_id ? Number(values.tunnel_id) : null,
       user_id: values.user_id ? Number(values.user_id) : null,
+      exit_port: values.exit_port,
       limit: values.limitText.trim() === "" ? null : (JSON.parse(values.limitText) as CreateRuleInput["limit"]),
     });
   };
@@ -245,6 +250,16 @@ function RuleForm({
           onChange={(v) => set("user_id", (v as string | null) ?? null)}
         />
       </div>
+      {tunnels.find((t) => String(t.id) === values.tunnel_id)?.forward_mode === ForwardMode.RAW ? (
+        <NumberForm
+          label="出口端口"
+          minValue={0}
+          maxValue={65535}
+          hint="裸转发隧道在出口节点上的独立监听端口；0 = 自动分配"
+          value={values.exit_port}
+          onChange={(v) => set("exit_port", v ?? 0)}
+        />
+      ) : null}
       <TextForm
         label="限速配置 (JSON)"
         multiline

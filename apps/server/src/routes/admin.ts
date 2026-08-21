@@ -1,14 +1,18 @@
-import type { AdminRuleRow, Chain, Package, RelayRule, Tunnel, User, UserSubscription } from "@tyz/shared";
+import type { AdminRuleRow, Chain, Package, TunnelWithMeta, User, UserSubscription } from "@tyz/shared";
 import {
+  ChainType,
   createChainSchema,
   createNodeSchema,
   createPackageSchema,
   createRuleSchema,
   createTunnelSchema,
   createUserSchema,
+  ForwardMode,
   loginSchema,
   type NodeWithMeta,
+  setTlsDomainSchema,
   subscribeSchema,
+  Transport,
   updateChainSchema,
   updateNodeSchema,
   updatePackageSchema,
@@ -16,7 +20,7 @@ import {
   updateTunnelSchema,
   updateUserSchema,
 } from "@tyz/shared";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, count, desc, eq, gte } from "drizzle-orm";
 import { Hono } from "hono";
 import { createDb, type Database } from "../db";
 import { nodeEntityColumns, recomputeNodeConfig, toRelayNode, toRelayRule, toTunnel } from "../db/repo";
@@ -38,6 +42,7 @@ import { adminAuth, clearSessionCookie, issueSessionCookie, verifyAdminCredentia
 import { listAudit, recordAudit } from "../services/audit";
 import { broadcastNodeMessage, notifyConfigChanged } from "../services/notify";
 import { getActiveSubscriptions, quotaDecisionsForUsers, userQuotaSummary } from "../services/quota";
+import { getTlsDomain, getTlsStatus, setTlsDomain } from "../services/tls";
 import { hashNodeToken } from "../utils/crypto";
 
 export const adminRoutes = new Hono<{ Bindings: Bindings }>();
@@ -115,6 +120,77 @@ async function recomputeUserNodes(env: Bindings, userId: number): Promise<void> 
     if (tunnel_id !== null) {
       await recomputeTunnelNodes(env, tunnel_id);
     }
+  }
+}
+
+// ---- Forward-mode / TLS shape validation ----
+
+interface TunnelShape {
+  total: number;
+  ins: number;
+  outs: number;
+  outTransport: Transport | null;
+}
+
+async function tunnelShape(db: Database, tunnelId: number): Promise<TunnelShape> {
+  const rows = await db.select().from(chains).where(eq(chains.tunnel_id, tunnelId));
+  const outs = rows.filter((r) => r.chain_type === ChainType.OUT);
+  return {
+    total: rows.length,
+    ins: rows.filter((r) => r.chain_type === ChainType.IN).length,
+    outs: outs.length,
+    outTransport: (outs[0]?.transport as Transport) ?? null,
+  };
+}
+
+/**
+ * Validate the tunnel's mode flags against its chain shape. Empty tunnels
+ * (no chains yet) accept anything — the shape is judged once links exist,
+ * both on tunnel updates and on chain writes. Aggregation additionally
+ * normalizes impossible states as a last line of defense.
+ */
+async function validateTunnelMode(
+  db: Database,
+  tunnelId: number,
+  next: { forward_mode?: ForwardMode; tls_enabled?: boolean },
+): Promise<string | null> {
+  const row = await db.select().from(tunnels).where(eq(tunnels.id, tunnelId)).get();
+  if (!row) return `tunnel ${tunnelId} not found`;
+  const forwardMode = next.forward_mode ?? row.forward_mode;
+  const tlsEnabled = next.tls_enabled ?? row.tls_enabled;
+  if (forwardMode !== ForwardMode.RAW && !tlsEnabled) return null;
+
+  const shape = await tunnelShape(db, tunnelId);
+  if (shape.total === 0) return null;
+
+  const twoHop = shape.total === 2 && shape.ins === 1 && shape.outs === 1;
+  const singleNode = shape.total === 1 && shape.ins === 1;
+  if (forwardMode === ForwardMode.RAW) {
+    if (tlsEnabled) return "raw 模式不支持 TLS（裸转发即纯 TCP）";
+    if (!singleNode && !twoHop) {
+      return "raw 模式仅支持单节点（仅入口链路）或两节点（一入口一出口）形态";
+    }
+    return null;
+  }
+  // tls_enabled relay tunnel
+  if (!twoHop) return "TLS 仅支持两节点隧道（一入口一出口）";
+  if (shape.outTransport !== Transport.GRPC && shape.outTransport !== Transport.TLS) {
+    return "TLS 要求出口链路的传输为 grpc 或 tls";
+  }
+  if (!(await getTlsDomain(db))) return "请先在设置中配置 TLS 伪装域名";
+  return null;
+}
+
+/** Recompute every node serving a TLS-enabled tunnel (domain/material changes). */
+async function recomputeTlsNodes(env: Bindings): Promise<void> {
+  const db = createDb(env.DB);
+  const rows = await db
+    .selectDistinct({ node_id: chains.node_id })
+    .from(chains)
+    .innerJoin(tunnels, eq(tunnels.id, chains.tunnel_id))
+    .where(eq(tunnels.tls_enabled, true));
+  for (const { node_id } of rows) {
+    await recomputeAndNotify(env, node_id);
   }
 }
 
@@ -313,9 +389,20 @@ adminRoutes.get("/nodes/:id/health", async (c) => {
 
 // ---- Tunnels ----
 
+/** Chain count per tunnel id (drives the effective-mode display in the panel). */
+async function chainCounts(db: Database): Promise<Map<number, number>> {
+  const rows = await db.select({ tunnel_id: chains.tunnel_id, n: count() }).from(chains).groupBy(chains.tunnel_id);
+  return new Map(rows.map((r) => [r.tunnel_id, r.n]));
+}
+
 adminRoutes.get("/tunnels", async (c) => {
-  const rows = await createDb(c.env.DB).select().from(tunnels).orderBy(tunnels.id);
-  const list: Tunnel[] = rows.map(toTunnel);
+  const db = createDb(c.env.DB);
+  const rows = await db.select().from(tunnels).orderBy(tunnels.id);
+  const counts = await chainCounts(db);
+  const list: TunnelWithMeta[] = rows.map((row) => ({
+    ...toTunnel(row),
+    chain_count: counts.get(row.id) ?? 0,
+  }));
   return c.json({ tunnels: list });
 });
 
@@ -324,18 +411,28 @@ adminRoutes.post("/tunnels", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid tunnel payload", detail: parsed.error.flatten() }, 400);
   }
+  const input = parsed.data;
+  // A fresh tunnel has no chains — mode/TLS shape is validated once links
+  // exist (chain writes and tunnel updates), and normalized at aggregation.
+  if (input.tls_enabled && !(await getTlsDomain(createDb(c.env.DB)))) {
+    return c.json({ error: "请先在设置中配置 TLS 伪装域名" }, 400);
+  }
   const ts = now();
   const [tunnel] = await createDb(c.env.DB)
     .insert(tunnels)
     .values({
-      name: parsed.data.name,
-      description: parsed.data.description ?? null,
-      ingress_display_address: parsed.data.ingress_display_address ?? null,
+      name: input.name,
+      description: input.description ?? null,
+      ingress_display_address: input.ingress_display_address ?? null,
+      forward_mode: input.forward_mode,
+      tls_enabled: input.tls_enabled,
+      relay_auth_user: `relay-${generateNodeToken().slice(0, 8)}`,
+      relay_auth_pass: generateNodeToken(),
       created_at: ts,
       updated_at: ts,
     })
     .returning();
-  return c.json({ tunnel: toTunnel(tunnel) }, 201);
+  return c.json({ tunnel: { ...toTunnel(tunnel), chain_count: 0 } }, 201);
 });
 
 adminRoutes.put("/tunnels/:id", async (c) => {
@@ -345,10 +442,19 @@ adminRoutes.put("/tunnels/:id", async (c) => {
     return c.json({ error: "invalid tunnel payload", detail: parsed.error.flatten() }, 400);
   }
   const input = parsed.data;
+  if (input.forward_mode !== undefined || input.tls_enabled !== undefined) {
+    const problem = await validateTunnelMode(createDb(c.env.DB), id, {
+      forward_mode: input.forward_mode,
+      tls_enabled: input.tls_enabled,
+    });
+    if (problem) return c.json({ error: problem }, 400);
+  }
   const patch: Partial<typeof tunnels.$inferInsert> = {};
   if (input.name !== undefined) patch.name = input.name;
   if (input.description !== undefined) patch.description = input.description;
   if (input.ingress_display_address !== undefined) patch.ingress_display_address = input.ingress_display_address;
+  if (input.forward_mode !== undefined) patch.forward_mode = input.forward_mode;
+  if (input.tls_enabled !== undefined) patch.tls_enabled = input.tls_enabled;
 
   if (Object.keys(patch).length === 0) {
     return c.json({ error: "no fields to update" }, 400);
@@ -364,8 +470,10 @@ adminRoutes.put("/tunnels/:id", async (c) => {
     return c.json({ error: "tunnel not found" }, 404);
   }
   await recomputeTunnelNodes(c.env, id);
-  const [tunnel] = await createDb(c.env.DB).select().from(tunnels).where(eq(tunnels.id, id));
-  return c.json({ tunnel: tunnel ? toTunnel(tunnel) : null });
+  const db = createDb(c.env.DB);
+  const [tunnel] = await db.select().from(tunnels).where(eq(tunnels.id, id));
+  const chainCount = (await db.select({ n: count() }).from(chains).where(eq(chains.tunnel_id, id)))[0]?.n ?? 0;
+  return c.json({ tunnel: tunnel ? { ...toTunnel(tunnel), chain_count: chainCount } : null });
 });
 
 adminRoutes.delete("/tunnels/:id", async (c) => {
@@ -402,8 +510,21 @@ adminRoutes.post("/chains", async (c) => {
     return c.json({ error: "invalid chain payload", detail: parsed.error.flatten() }, 400);
   }
   const input = parsed.data;
+  const db = createDb(c.env.DB);
+  // Judge the post-write shape (the new chain included) against the tunnel's
+  // stored mode flags — e.g. a third chain must not land on a raw tunnel.
+  const before = await tunnelShape(db, input.tunnel_id);
+  const projected: TunnelShape = { ...before, total: before.total + 1 };
+  if (input.chain_type === ChainType.IN) projected.ins += 1;
+  if (input.chain_type === ChainType.OUT) {
+    projected.outs += 1;
+    projected.outTransport = input.transport;
+  }
+  const problem = await validateProjectedShape(db, input.tunnel_id, projected);
+  if (problem) return c.json({ error: problem }, 400);
+
   const ts = now();
-  const [chain] = await createDb(c.env.DB)
+  const [chain] = await db
     .insert(chains)
     .values({
       tunnel_id: input.tunnel_id,
@@ -428,12 +549,31 @@ adminRoutes.put("/chains/:id", async (c) => {
     return c.json({ error: "invalid chain payload", detail: parsed.error.flatten() }, 400);
   }
   const db = createDb(c.env.DB);
-  const existing = await db.select({ tunnel_id: chains.tunnel_id }).from(chains).where(eq(chains.id, id)).get();
+  const existing = await db.select().from(chains).where(eq(chains.id, id)).get();
   if (!existing) {
     return c.json({ error: "chain not found" }, 404);
   }
 
   const input = parsed.data;
+  const targetTunnel = input.tunnel_id ?? existing.tunnel_id;
+  const projected = await tunnelShape(db, targetTunnel);
+  if (targetTunnel === existing.tunnel_id) {
+    // Fold the update into the current shape.
+    if (existing.chain_type === ChainType.IN) projected.ins -= 1;
+    if (existing.chain_type === ChainType.OUT) projected.outs -= 1;
+    projected.total -= 1;
+  }
+  const nextType = input.chain_type ?? existing.chain_type;
+  const nextTransport = input.transport ?? existing.transport;
+  projected.total += 1;
+  if (nextType === ChainType.IN) projected.ins += 1;
+  if (nextType === ChainType.OUT) {
+    projected.outs += 1;
+    projected.outTransport = nextTransport;
+  }
+  const problem = await validateProjectedShape(db, targetTunnel, projected);
+  if (problem) return c.json({ error: problem }, 400);
+
   const patch: Partial<typeof chains.$inferInsert> = {};
   if (input.tunnel_id !== undefined) patch.tunnel_id = input.tunnel_id;
   if (input.node_id !== undefined) patch.node_id = input.node_id;
@@ -460,14 +600,44 @@ adminRoutes.put("/chains/:id", async (c) => {
 adminRoutes.delete("/chains/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const db = createDb(c.env.DB);
-  const existing = await db.select({ tunnel_id: chains.tunnel_id }).from(chains).where(eq(chains.id, id)).get();
+  const existing = await db.select().from(chains).where(eq(chains.id, id)).get();
   if (!existing) {
     return c.json({ error: "chain not found" }, 404);
+  }
+  // Removing one of the two links of a TLS tunnel breaks its 2-hop shape —
+  // the operator must turn TLS off first.
+  const tunnel = await db.select().from(tunnels).where(eq(tunnels.id, existing.tunnel_id)).get();
+  if (tunnel?.tls_enabled) {
+    const remaining = await db.select({ id: chains.id }).from(chains).where(eq(chains.tunnel_id, existing.tunnel_id));
+    if (remaining.length <= 2) {
+      return c.json({ error: "TLS 隧道必须保持两节点形态，请先关闭 TLS 再删除链路" }, 400);
+    }
   }
   await db.delete(chains).where(eq(chains.id, id)).run();
   await recomputeTunnelNodes(c.env, existing.tunnel_id);
   return c.json({ ok: true });
 });
+
+/** Shape rules shared by chain create/update against the tunnel's mode flags. */
+async function validateProjectedShape(db: Database, tunnelId: number, shape: TunnelShape): Promise<string | null> {
+  const row = await db.select().from(tunnels).where(eq(tunnels.id, tunnelId)).get();
+  if (!row) return `tunnel ${tunnelId} not found`;
+  if (row.forward_mode !== ForwardMode.RAW && !row.tls_enabled) return null;
+  if (shape.total === 0) return null;
+  const twoHop = shape.total === 2 && shape.ins === 1 && shape.outs === 1;
+  const singleNode = shape.total === 1 && shape.ins === 1;
+  if (row.forward_mode === ForwardMode.RAW) {
+    if (!singleNode && !twoHop) {
+      return "raw 模式仅支持单节点（仅入口链路）或两节点（一入口一出口）形态";
+    }
+    return null;
+  }
+  if (!twoHop) return "TLS 隧道必须保持两节点形态（一入口一出口）";
+  if (shape.outTransport !== Transport.GRPC && shape.outTransport !== Transport.TLS) {
+    return "TLS 要求出口链路的传输为 grpc 或 tls";
+  }
+  return null;
+}
 
 // ---- Relay rules ----
 
@@ -556,6 +726,7 @@ adminRoutes.post("/rules", async (c) => {
       user_id: input.user_id ?? null,
       targets: input.targets,
       status: input.status,
+      exit_port: input.exit_port,
       limit: input.limit ?? null,
       created_at: ts,
       updated_at: ts,
@@ -600,6 +771,7 @@ adminRoutes.put("/rules/:id", async (c) => {
   if (input.user_id !== undefined) patch.user_id = input.user_id;
   if (input.targets !== undefined) patch.targets = input.targets;
   if (input.status !== undefined) patch.status = input.status;
+  if (input.exit_port !== undefined) patch.exit_port = input.exit_port;
   if (input.limit !== undefined) patch.limit = input.limit;
   patch.updated_at = now();
 
@@ -844,6 +1016,36 @@ adminRoutes.post("/users/:id/subscribe", async (c) => {
 });
 
 // ---- Packages (plans) ----
+
+// ---- Link TLS (platform certs) ----
+
+/** Expiry metadata only — cert/key PEMs never leave the agent config channel. */
+adminRoutes.get("/tls/status", async (c) => {
+  return c.json(await getTlsStatus(createDb(c.env.DB)));
+});
+
+/**
+ * Set the platform-wide disguise domain (SNI / serverName / server cert SAN).
+ * Changing it re-issues the server certificate; nodes of TLS tunnels pick up
+ * the new material via the ordinary recompute → WS push cycle.
+ */
+adminRoutes.put("/settings/tls-domain", async (c) => {
+  const parsed = setTlsDomainSchema.safeParse(await readJson(c));
+  if (!parsed.success) {
+    return c.json({ error: "invalid tls domain payload", detail: parsed.error.flatten() }, 400);
+  }
+  const db = createDb(c.env.DB);
+  const previous = await getTlsDomain(db);
+  await setTlsDomain(db, parsed.data.domain);
+  await recordAudit(c.env, {
+    action: "settings.tls_domain",
+    targetType: "settings",
+    targetId: "tls_domain",
+    detail: `${previous ?? "(unset)"} -> ${parsed.data.domain}`,
+  });
+  await recomputeTlsNodes(c.env);
+  return c.json({ ok: true, domain: parsed.data.domain });
+});
 
 /** Admin audit trail, newest first. */
 adminRoutes.get("/audit", async (c) => {
