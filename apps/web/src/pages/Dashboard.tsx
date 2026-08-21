@@ -56,7 +56,10 @@ function StatusCard({
   hint?: string;
 }) {
   return (
-    <Link to={to} className="group block">
+    <Link
+      to={to}
+      className="group block rounded-md outline-accent focus-visible:outline-2 focus-visible:outline-offset-2"
+    >
       <Card className="transition-colors group-hover:border-accent">
         <Card.Content className="flex items-center gap-4">
           <div className={cn("flex size-11 shrink-0 items-center justify-center rounded-lg", CARD_TONES[tone])}>
@@ -236,7 +239,7 @@ function NodeHealthWall({ nodes, loading }: { nodes: DashboardSummary["nodes_hea
               <Link
                 key={n.node_id}
                 to="/nodes"
-                className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 transition-colors hover:border-accent"
+                className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 outline-accent transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-2"
               >
                 <div className="flex min-w-0 items-center gap-2">
                   <IconServer
@@ -318,7 +321,7 @@ function QuickActionsCard() {
           <Link
             key={action.to}
             to={action.to}
-            className="flex items-center gap-2 rounded-md border border-border px-3 py-2.5 text-sm transition-colors hover:border-accent hover:text-accent"
+            className="flex items-center gap-2 rounded-md border border-border px-3 py-2.5 text-sm outline-accent transition-colors hover:border-accent hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2"
           >
             {action.icon}
             {action.label}

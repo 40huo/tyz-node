@@ -8,14 +8,57 @@
 }
 
 @theme {
+  /* Latin 走 Geist（可变字重，数字与英文更紧凑），CJK 回落 Noto Sans SC */
   --font-sans:
-    "Noto Sans SC", "Geist Variable", -apple-system, "Segoe UI", sans-serif;
+    "Geist Variable", "Noto Sans SC", -apple-system, "Segoe UI", sans-serif;
 }
 
 @layer base {
   body {
     font-family: var(--font-sans);
   }
+
+  /* 标题换行均匀：长标题避免孤字，短标题（表格列头等）无感 */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    text-wrap: balance;
+  }
+
+  /* 选中态跟随 accent 语义色，两种主题下均可读 */
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 26%, transparent);
+  }
+
+  /* 细滚动条：暗色模式下系统默认滚动条过于突兀 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--foreground) 22%, transparent)
+      transparent;
+  }
+}
+
+/* 登录页背景：顶部 accent 辉光 + 极淡的隧道网格纹理（纯装饰，不承载布局） */
+.login-backdrop {
+  background:
+    radial-gradient(
+      60rem 32rem at 50% -10rem,
+      color-mix(in oklab, var(--accent) 13%, transparent),
+      transparent 70%
+    ),
+    repeating-linear-gradient(
+      to right,
+      color-mix(in oklab, var(--foreground) 3.5%, transparent) 0 1px,
+      transparent 1px 3.5rem
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      color-mix(in oklab, var(--foreground) 3.5%, transparent) 0 1px,
+      transparent 1px 3.5rem
+    );
 }
 
 /* 流量趋势图（Dashboard）：recharts 会把 Area 的 style 透传到填充+描边两条 path，

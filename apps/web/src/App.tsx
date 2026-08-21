@@ -24,6 +24,7 @@ import AuditPage from "./pages/Audit";
 import DashboardPage from "./pages/Dashboard";
 import LoginPage from "./pages/Login";
 import NodesPage from "./pages/Nodes";
+import NotFoundPage from "./pages/NotFound";
 import PackagesPage from "./pages/Packages";
 import ProfilePage from "./pages/Profile";
 import RulesPage from "./pages/Rules";
@@ -296,6 +297,13 @@ function AppLayout() {
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
+      {/* 键盘用户跳过侧栏直达主内容（聚焦前视觉隐藏） */}
+      <a
+        href="#main-content"
+        className="sr-only rounded-md bg-surface px-3 py-2 text-sm shadow-lg focus:not-sr-only focus:absolute focus:top-3 focus:left-3 focus:z-50"
+      >
+        跳到主内容
+      </a>
       <header
         className={cn(
           "sticky top-0 z-40 flex h-14 items-center gap-3 border-b border-border bg-background px-4 transition-[margin]",
@@ -378,7 +386,11 @@ function AppLayout() {
         </Drawer.Content>
       </Drawer.Backdrop>
 
-      <main className={cn("transition-[padding]", collapsed ? "md:pl-[68px]" : "md:pl-56")}>
+      <main
+        id="main-content"
+        tabIndex={-1}
+        className={cn("transition-[padding] outline-none", collapsed ? "md:pl-[68px]" : "md:pl-56")}
+      >
         <div className="mx-auto max-w-[1200px] p-4 md:p-6">
           <Outlet />
         </div>
@@ -416,6 +428,7 @@ export default function App() {
         <Route path="settings/audit" element={<AuditPage />} />
         <Route path="audit" element={<Navigate to="/settings/audit" replace />} />
         <Route path="profile" element={<ProfilePage />} />
+        <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>
   );

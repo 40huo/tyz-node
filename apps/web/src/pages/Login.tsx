@@ -30,38 +30,46 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-background p-4 text-foreground">
-      <Card className="w-full max-w-sm p-2">
-        <Card.Header className="pb-2">
-          <Card.Title>TYZ 控制台</Card.Title>
-          <Card.Description>登录以管理 GOST 隧道节点</Card.Description>
-        </Card.Header>
-        <Card.Content>
-          <FormShell onSubmit={onSubmit}>
-            <TextForm
-              label="用户名"
-              isRequired
-              autoComplete="username"
-              autoFocus
-              value={values.username}
-              onChange={(v) => setValues((s) => ({ ...s, username: v }))}
-              error={errors.username}
-            />
-            <TextForm
-              label="密码"
-              isRequired
-              type="password"
-              autoComplete="current-password"
-              value={values.password}
-              onChange={(v) => setValues((s) => ({ ...s, password: v }))}
-              error={errors.password}
-            />
-            <SubmitButton size="lg" fullWidth isPending={pending}>
-              登录
-            </SubmitButton>
-          </FormShell>
-        </Card.Content>
-      </Card>
+    <div className="login-backdrop flex min-h-dvh items-center justify-center bg-background p-4 text-foreground">
+      <div className="flex w-full max-w-sm flex-col gap-5">
+        <div className="flex items-center justify-center gap-2.5">
+          <div className="flex size-[30px] shrink-0 items-center justify-center rounded-lg bg-accent text-sm font-bold text-accent-foreground">
+            T
+          </div>
+          <span className="text-lg font-semibold">TYZ 控制台</span>
+        </div>
+        <Card className="p-2">
+          <Card.Header className="pb-2">
+            <Card.Title>登录</Card.Title>
+            <Card.Description>使用管理员账号管理 GOST 隧道节点</Card.Description>
+          </Card.Header>
+          <Card.Content>
+            <FormShell onSubmit={onSubmit}>
+              <TextForm
+                label="用户名"
+                isRequired
+                autoComplete="username"
+                autoFocus
+                value={values.username}
+                onChange={(v) => setValues((s) => ({ ...s, username: v }))}
+                error={errors.username}
+              />
+              <TextForm
+                label="密码"
+                isRequired
+                type="password"
+                autoComplete="current-password"
+                value={values.password}
+                onChange={(v) => setValues((s) => ({ ...s, password: v }))}
+                error={errors.password}
+              />
+              <SubmitButton size="lg" fullWidth isPending={pending}>
+                登录
+              </SubmitButton>
+            </FormShell>
+          </Card.Content>
+        </Card>
+      </div>
     </div>
   );
 }
