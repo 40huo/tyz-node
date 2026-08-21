@@ -167,6 +167,10 @@ func (b *cfgBuilder) buildServices() error {
 
 		var svc *config.ServiceConfig
 		var err error
+		// Entry-side services (the rule's listen port, limiters, quota) are
+		// built by the node holding the tunnel's IN chain; exit-side shapes
+		// differ per forward mode.
+		isEntry := true
 
 		if rule.TunnelID == nil {
 			svc, err = b.forwardService(rule)
@@ -177,14 +181,21 @@ func (b *cfgBuilder) buildServices() error {
 			}
 			if b.inChainForNode(tunnel) != nil {
 				svc, err = b.entryService(rule, tunnel)
-			} else if relayBuilt[tunnel.ID] {
-				// One relay listener serves every rule of the tunnel: the
-				// relay protocol carries each connection's destination
-				// in-band, so entry rules share a single exit port.
-				continue
 			} else {
-				relayBuilt[tunnel.ID] = true
-				svc, err = b.relayService(tunnel)
+				isEntry = false
+				if tunnel.ForwardMode == model.ForwardModeRaw {
+					// No port multiplexing: every rule gets its own dedicated
+					// tcp/tcp exit service.
+					svc, err = b.rawExitService(rule, tunnel)
+				} else if relayBuilt[tunnel.ID] {
+					// One relay listener serves every rule of the tunnel: the
+					// relay protocol carries each connection's destination
+					// in-band, so entry rules share a single exit port.
+					continue
+				} else {
+					relayBuilt[tunnel.ID] = true
+					svc, err = b.relayService(tunnel)
+				}
 			}
 		}
 		if err != nil {
@@ -194,17 +205,19 @@ func (b *cfgBuilder) buildServices() error {
 		// report traffic stats for the service.
 		svc.Metadata = map[string]any{"enableStats": "true"}
 		svc.Observer = ObserverName
-		// Traffic allowance: only the rule's own service enforces it (entry
-		// nodes and standalone forwards). Exit relay services are shared by
-		// every rule of the tunnel and never carry quotas — the `continue`
-		// path above skips this block on exit nodes. Several rules may share
-		// one quota name (per-user allowance): emit the object once, every
-		// service references it.
-		if quota := b.quotaFor(rule); quota != nil {
-			svc.Quotas = []string{quota.Name}
-			if !quotaBuilt[quota.Name] {
-				quotaBuilt[quota.Name] = true
-				b.config.Quotas = append(b.config.Quotas, quota)
+		// Traffic allowance: only the rule's ENTRY service enforces it (entry
+		// nodes and standalone forwards). Exit services never carry quotas —
+		// the shared relay listener belongs to many rules, and a raw-mode exit
+		// leg mirrors the entry leg (counting both would double-dip one
+		// allowance). Several rules may share one quota name (per-user
+		// allowance): emit the object once, every service references it.
+		if isEntry {
+			if quota := b.quotaFor(rule); quota != nil {
+				svc.Quotas = []string{quota.Name}
+				if !quotaBuilt[quota.Name] {
+					quotaBuilt[quota.Name] = true
+					b.config.Quotas = append(b.config.Quotas, quota)
+				}
 			}
 		}
 		b.config.Services = append(b.config.Services, svc)
@@ -224,8 +237,26 @@ func (b *cfgBuilder) forwardService(rule *model.RelayRule) (*config.ServiceConfi
 
 // entryService listens on the rule's port. One service per rule; all rules of
 // a tunnel reference the same chain (chains are deduplicated per tunnel).
+// Raw-mode tunnels with an exit forward straight to the rule's dedicated exit
+// port (no chain object, no relay protocol); a single-node raw tunnel has no
+// exit and falls through to the direct-forward shape below (identical bytes
+// to the legacy 1-hop form).
 func (b *cfgBuilder) entryService(rule *model.RelayRule, tunnel *model.Tunnel) (*config.ServiceConfig, error) {
 	svc := b.baseService(rule)
+	if tunnel.ForwardMode == model.ForwardModeRaw && b.outChain(tunnel) != nil {
+		addr, err := b.rawExitAddr(rule, tunnel)
+		if err != nil {
+			return nil, err
+		}
+		svc.Handler = &config.HandlerConfig{Type: "tcp"}
+		svc.Listener = &config.ListenerConfig{Type: "tcp"}
+		svc.Forwarder = &config.ForwarderConfig{
+			Nodes:    []*config.ForwardNodeConfig{{Name: targetName(rule.ID), Addr: addr}},
+			Selector: defaultSelector("round"),
+		}
+		b.attachLimiters(svc, rule)
+		return svc, nil
+	}
 	chains := b.chainsForTunnel(tunnel.ID)
 	switch len(chains) {
 	case 1: // single-hop forwarding
@@ -250,6 +281,10 @@ func (b *cfgBuilder) entryService(rule *model.RelayRule, tunnel *model.Tunnel) (
 // different machines. Port 0 auto-allocates from this node's own chain row
 // (the same deterministic formula entries use to dial it).
 // Rule limiters apply at the entry services, not here.
+// Relay-protocol auth rides the handler whenever the tunnel carries
+// credentials; TLS tunnels additionally wrap the listener (mutual
+// verification against the platform CA) and guard it with an admission
+// whitelist of the tunnel's entry IPs.
 func (b *cfgBuilder) relayService(tunnel *model.Tunnel) (*config.ServiceConfig, error) {
 	nodeChain := b.chainForNodeInTunnel(tunnel)
 	if nodeChain == nil {
@@ -267,12 +302,23 @@ func (b *cfgBuilder) relayService(tunnel *model.Tunnel) (*config.ServiceConfig, 
 	if out := b.outChain(tunnel); out != nil {
 		transport = out.Transport
 	}
-	return &config.ServiceConfig{
+	svc := &config.ServiceConfig{
 		Name:     fmt.Sprintf("service-t%d", tunnel.ID),
 		Addr:     fmt.Sprintf(":%d", port),
-		Handler:  &config.HandlerConfig{Type: "relay"},
+		Handler:  &config.HandlerConfig{Type: "relay", Auth: relayAuth(tunnel)},
 		Listener: &config.ListenerConfig{Type: dialerType(transport)},
-	}, nil
+	}
+	if b.linkTLSEnabled(tunnel) {
+		svc.Listener.TLS = b.listenerTLS(transport)
+		if transport == model.TransportGRPC {
+			svc.Listener.Metadata = map[string]any{"path": "/grpc"}
+		}
+		if admission := b.admissionFor(tunnel); admission != nil {
+			svc.Admission = admission.Name
+			b.config.Admissions = append(b.config.Admissions, admission)
+		}
+	}
+	return svc, nil
 }
 
 func (b *cfgBuilder) baseService(rule *model.RelayRule) *config.ServiceConfig {
@@ -338,6 +384,13 @@ func (b *cfgBuilder) buildChains() error {
 		}
 		processed[tunnel.ID] = true
 
+		// Raw-mode entries dial the exit's per-rule ports directly from their
+		// forwarders — no chain object exists (and no relay protocol bytes
+		// hit the wire).
+		if tunnel.ForwardMode == model.ForwardModeRaw {
+			continue
+		}
+
 		chains := b.chainsForTunnel(tunnel.ID)
 		switch {
 		case len(chains) == 2:
@@ -361,11 +414,22 @@ func (b *cfgBuilder) buildChains() error {
 
 // twoHopChain builds a chain whose single hop is the EXIT node (its chain
 // row): the relay connector hands each connection's destination to the exit's
-// relay listener, dialed over the exit row's transport.
+// relay listener, dialed over the exit row's transport. The connector carries
+// the tunnel's relay credentials when present; TLS tunnels dial with the
+// platform client cert and verify the exit against the platform CA.
 func (b *cfgBuilder) twoHopChain(tunnel *model.Tunnel, out *model.Chain) (*config.ChainConfig, error) {
 	node, err := b.nodeConfig(out, tunnel, out.Transport, "relay")
 	if err != nil {
 		return nil, err
+	}
+	node.Connector.Auth = relayAuth(tunnel)
+	if b.linkTLSEnabled(tunnel) {
+		node.Dialer.TLS = b.dialerTLS(out.Transport)
+		if out.Transport == model.TransportGRPC {
+			// :authority / SNI disguise — the dial targets an IP, the TLS
+			// handshake presents the platform domain.
+			node.Dialer.Metadata = map[string]any{"host": b.data.TLSMaterial.SNI, "path": "/grpc"}
+		}
 	}
 	return &config.ChainConfig{
 		Name: chainName(tunnel.ID),

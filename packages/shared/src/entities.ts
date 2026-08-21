@@ -31,6 +31,17 @@ export enum UserStatus {
   DISABLED = "disabled",
 }
 
+/**
+ * Two-node tunnel forward mode. 'relay' (default): port-multiplexed relay
+ * protocol, one exit listener shared by every rule of the tunnel. 'raw':
+ * plain tcp/tcp forwarding with a dedicated port per rule on BOTH nodes —
+ * no relay protocol header on the wire (censorship-evasion mode).
+ */
+export enum ForwardMode {
+  RELAY = "relay",
+  RAW = "raw",
+}
+
 export interface RelayNode {
   id: number;
   name: string;
@@ -57,8 +68,21 @@ export interface Tunnel {
   name: string;
   description?: string;
   ingress_display_address?: string; // Optional entry address for IN chain
+  forward_mode: ForwardMode;
+  /** TLS-wrapped entry<->exit link (platform certs, mutual verification). */
+  tls_enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * Tunnel as delivered to agents: the admin entity plus the relay-protocol
+ * link credentials (the builder needs them for GOST AuthConfig). The
+ * credentials never appear in admin-facing responses.
+ */
+export interface TunnelPayload extends Tunnel {
+  relay_auth_user: string;
+  relay_auth_pass: string;
 }
 
 export interface Chain {
@@ -83,7 +107,19 @@ export interface RelayRule {
   /** Owning tenant; absent for admin-managed rules (no quota enforcement). */
   user_id?: number;
   targets: string; // Target address, e.g., "example.com:80"
+  /**
+   * Stored target endpoint this rule forwards to; absent = manually-entered
+   * `targets`. While associated, `targets` mirrors `endpointAddress(endpoint)`
+   * — the server re-syncs it (and recomputes affected tunnels) whenever the
+   * endpoint's host/port change.
+   */
+  endpoint_id?: number;
   status: RelayRuleStatus;
+  /**
+   * raw-mode tunnels: the rule's dedicated listening port on the EXIT node.
+   * 0 = deterministic auto-allocation from the exit node's port range.
+   */
+  exit_port: number;
   limit?: LimiterConfig; // JSON object for limiter configuration
   /** Traffic allowance computed by the control plane at push time. */
   quota?: RuleQuota;
@@ -105,6 +141,26 @@ export interface RuleQuota {
   limit_bytes: number;
   starts_at: string; // subscription activation time, RFC3339
   expires_at?: string; // RFC3339; empty for permanent packages
+}
+
+/**
+ * Named forwarding destination (host + port) relay rules can reference instead
+ * of a manually-entered address. `rule.targets` keeps its own copy of the
+ * composed address so the agent config pipeline never joins this table.
+ */
+export interface Endpoint {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  note?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Compose the rule `targets` address; IPv6 hosts get bracketed (`[::1]:80`). */
+export function endpointAddress(host: string, port: number): string {
+  return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
 }
 
 /**
@@ -196,6 +252,23 @@ export interface TlsConfig {
   organization?: string;
 }
 
+/**
+ * Platform-issued link TLS material, delivered to agents inside the config
+ * payload whenever any of the node's tunnels has tls_enabled. The agent
+ * writes the PEMs to its local certs directory and the generated GOST config
+ * references them by file path (mutual TLS: exit listeners present the server
+ * cert and verify clients against the CA; entry dialers present the client
+ * cert and verify the exit against the CA).
+ */
+export interface TlsMaterial {
+  sni: string;
+  ca_cert: string;
+  server_cert: string;
+  server_key: string;
+  client_cert: string;
+  client_key: string;
+}
+
 // Complete node configuration delivered to agents
 export interface NodeConfigData {
   node: RelayNode;
@@ -204,7 +277,9 @@ export interface NodeConfigData {
    * Optional: payloads without it fall back to `node` (legacy snapshots). */
   nodes?: RelayNode[];
   rules: RelayRule[];
-  tunnels: Tunnel[];
+  tunnels: TunnelPayload[];
   chains: Chain[];
   tls?: TlsConfig;
+  /** Present only when at least one of the node's tunnels enables link TLS. */
+  tls_material?: TlsMaterial;
 }

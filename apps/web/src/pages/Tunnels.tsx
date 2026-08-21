@@ -1,67 +1,76 @@
-import { Button, Chip, Table } from "@heroui/react";
+import { Button, FieldError, Switch, Table } from "@heroui/react";
 import { IconPlus } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { NodeWithMeta } from "@tyz/shared";
 import {
   type Chain,
   ChainType,
   type CreateChainInput,
   type CreateTunnelInput,
+  ForwardMode,
+  type NodeWithMeta,
   Transport,
   type Tunnel,
-  type UpdateChainInput,
-  type UpdateTunnelInput,
+  type TunnelWithMeta,
 } from "@tyz/shared";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
+import { chainTypeLabel, forwardModeLabel } from "../labels";
 import {
   emptyState,
   type FormErrors,
+  FormFooter,
   FormModal,
   FormShell,
   fail,
   hasErrors,
+  ListToolbar,
   Mono,
   NumberForm,
   PageHeader,
   PageShell,
   RowButton,
+  SearchInput,
   SelectForm,
   SideDrawer,
-  SubmitButton,
+  StatusChip,
+  TableError,
   TableLoading,
   TextForm,
+  useCrudMutation,
   useFormValues,
 } from "../ui";
 
 // ---- Tunnel form ----
 
+const FORWARD_MODE_OPTIONS = [
+  { value: ForwardMode.RELAY, label: "relay 端口复用（默认）" },
+  { value: ForwardMode.RAW, label: "裸转发（每规则独立端口）" },
+];
+
 interface TunnelFormValues {
   name: string;
   ingress_display_address: string;
   description: string;
+  forward_mode: string;
+  tls_enabled: boolean;
 }
 
-function TunnelDialog({ tunnel, opened, onClose }: { tunnel: Tunnel | null; opened: boolean; onClose: () => void }) {
-  const queryClient = useQueryClient();
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["tunnels"] });
-
-  const createMutation = useMutation({
-    mutationFn: (input: CreateTunnelInput) => api.createTunnel(input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
-  });
-  const updateMutation = useMutation({
-    mutationFn: (input: UpdateTunnelInput) => api.updateTunnel(tunnel!.id, input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
+function TunnelDialog({
+  tunnel,
+  opened,
+  onClose,
+}: {
+  tunnel: TunnelWithMeta | null;
+  opened: boolean;
+  onClose: () => void;
+}) {
+  const { save, isPending } = useCrudMutation({
+    invalidateKeys: [["tunnels"]],
+    create: (input: CreateTunnelInput) => api.createTunnel(input),
+    update: (id, input: CreateTunnelInput) => api.updateTunnel(id, input),
+    onClose,
   });
 
   return (
@@ -70,12 +79,9 @@ function TunnelDialog({ tunnel, opened, onClose }: { tunnel: Tunnel | null; open
         <TunnelForm
           key={tunnel?.id ?? "create"}
           tunnel={tunnel}
-          submitting={createMutation.isPending || updateMutation.isPending}
+          submitting={isPending}
           onCancel={onClose}
-          onSubmit={(input) => {
-            if (tunnel === null) createMutation.mutate(input);
-            else updateMutation.mutate(input);
-          }}
+          onSubmit={(input) => save(tunnel?.id ?? null, input)}
         />
       )}
     </FormModal>
@@ -88,7 +94,7 @@ function TunnelForm({
   submitting,
   onCancel,
 }: {
-  tunnel: Tunnel | null;
+  tunnel: TunnelWithMeta | null;
   onSubmit: (input: CreateTunnelInput) => void;
   submitting: boolean;
   onCancel: () => void;
@@ -97,19 +103,30 @@ function TunnelForm({
     name: tunnel?.name ?? "",
     ingress_display_address: tunnel?.ingress_display_address ?? "",
     description: tunnel?.description ?? "",
+    forward_mode: (tunnel?.forward_mode ?? ForwardMode.RELAY) as string,
+    tls_enabled: tunnel?.tls_enabled ?? false,
   }));
   const [errors, setErrors] = useState<FormErrors<TunnelFormValues>>({});
+  // A single-hop tunnel (one `in` chain, no exit node) renders identically
+  // for both modes (direct tcp forwarding); the stored value is kept as the
+  // operator picks it. TLS needs the 2-hop shape, so it stays hidden.
+  const singleHop = (tunnel?.chain_count ?? 0) === 1;
 
   const onSubmitForm = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const errs: FormErrors<TunnelFormValues> = {};
     if (!values.name.trim()) errs.name = "请输入名称";
+    if (values.forward_mode === ForwardMode.RAW && values.tls_enabled) {
+      errs.tls_enabled = "裸转发不支持 TLS（链路即纯 TCP）";
+    }
     setErrors(errs);
     if (hasErrors(errs)) return;
     onSubmit({
       name: values.name,
       ingress_display_address: values.ingress_display_address || undefined,
       description: values.description || undefined,
+      forward_mode: values.forward_mode as ForwardMode,
+      tls_enabled: values.tls_enabled,
     });
   };
 
@@ -122,6 +139,42 @@ function TunnelForm({
         value={values.ingress_display_address}
         onChange={(v) => set("ingress_display_address", v)}
       />
+      <SelectForm
+        label="转发模式"
+        options={FORWARD_MODE_OPTIONS}
+        value={values.forward_mode}
+        onChange={(v) => set("forward_mode", String(v))}
+        hint={
+          singleHop ? "单节点隧道两种模式生成的配置相同（直连转发）；添加出口链路后模式才会产生实际区别" : undefined
+        }
+      />
+      {singleHop ? null : values.forward_mode === ForwardMode.RAW ? (
+        <p className="text-muted">
+          裸转发：不使用 relay 协议、无端口复用——每条规则在两端各占一个独立 TCP 端口，链路上无任何自定义协议特征。
+        </p>
+      ) : (
+        <div className="flex flex-col gap-1">
+          <Switch
+            isSelected={values.tls_enabled}
+            onChange={(v) => set("tls_enabled", v)}
+            isInvalid={!!errors.tls_enabled}
+          >
+            <Switch.Content>
+              <Switch.Control>
+                <Switch.Thumb />
+              </Switch.Control>
+              TLS 加密链路（平台证书，双向验证）
+            </Switch.Content>
+            {errors.tls_enabled ? <FieldError>{errors.tls_enabled}</FieldError> : null}
+          </Switch>
+          {values.tls_enabled ? (
+            <p className="text-muted">
+              出口链路的传输需为 grpc 或 tls（grpc 走 TLS1.3 + h2，外观为普通 gRPC 流量）。启用前请先在设置中配置 TLS
+              伪装域名。
+            </p>
+          ) : null}
+        </div>
+      )}
       <TextForm
         label="描述"
         multiline
@@ -129,12 +182,7 @@ function TunnelForm({
         value={values.description}
         onChange={(v) => set("description", v)}
       />
-      <div className="flex justify-end gap-2">
-        <Button variant="tertiary" onPress={onCancel}>
-          取消
-        </Button>
-        <SubmitButton isPending={submitting}>保存</SubmitButton>
-      </div>
+      <FormFooter onCancel={onCancel} isPending={submitting} />
     </FormShell>
   );
 }
@@ -147,17 +195,6 @@ const CHAIN_TYPE_OPTIONS = [
   { value: ChainType.OUT, label: "出口 (out)" },
 ];
 const TRANSPORT_OPTIONS = Object.values(Transport).map((v) => ({ value: v, label: v }));
-
-const CHAIN_TYPE_COLOR: Record<string, "success" | "accent" | "danger"> = {
-  [ChainType.IN]: "success",
-  [ChainType.CHAIN]: "accent",
-  [ChainType.OUT]: "danger",
-};
-const CHAIN_TYPE_LABELS: Record<string, string> = {
-  [ChainType.IN]: "入口",
-  [ChainType.CHAIN]: "中继",
-  [ChainType.OUT]: "出口",
-};
 
 interface ChainFormValues {
   node_id: string | null;
@@ -201,24 +238,11 @@ function ChainDialog({
   opened: boolean;
   onClose: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["chains", tunnelId] });
-
-  const createMutation = useMutation({
-    mutationFn: (input: CreateChainInput) => api.createChain(input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
-  });
-  const updateMutation = useMutation({
-    mutationFn: (input: UpdateChainInput) => api.updateChain(chain!.id, input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
+  const { save, isPending } = useCrudMutation({
+    invalidateKeys: [["chains", tunnelId], ["tunnels"]],
+    create: (input: CreateChainInput) => api.createChain(input),
+    update: (id, input: CreateChainInput) => api.updateChain(id, input),
+    onClose,
   });
 
   return (
@@ -228,13 +252,9 @@ function ChainDialog({
           key={chain?.id ?? "create"}
           chain={chain}
           nodes={nodes}
-          submitting={createMutation.isPending || updateMutation.isPending}
+          submitting={isPending}
           onCancel={onClose}
-          onSubmit={(input) => {
-            const full = { ...input, tunnel_id: tunnelId };
-            if (chain === null) createMutation.mutate(full);
-            else updateMutation.mutate(full);
-          }}
+          onSubmit={(input) => save(chain?.id ?? null, { ...input, tunnel_id: tunnelId })}
         />
       )}
     </FormModal>
@@ -307,12 +327,7 @@ function ChainForm({
         />
       </div>
       <TextForm label="策略" placeholder="round" value={values.strategy} onChange={(v) => set("strategy", v)} />
-      <div className="flex justify-end gap-2">
-        <Button variant="tertiary" onPress={onCancel}>
-          取消
-        </Button>
-        <SubmitButton isPending={submitting}>保存</SubmitButton>
-      </div>
+      <FormFooter onCancel={onCancel} isPending={submitting} />
     </FormShell>
   );
 }
@@ -325,7 +340,12 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
   const [creating, setCreating] = useState(false);
 
   const chainsQuery = useQuery({ queryKey: ["chains", tunnel.id], queryFn: () => api.tunnelChains(tunnel.id) });
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["chains", tunnel.id] });
+  // Chain changes also affect the tunnel list's derived mode display
+  // (chain_count) — refresh both.
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["chains", tunnel.id] });
+    queryClient.invalidateQueries({ queryKey: ["tunnels"] });
+  };
   const deleteMutation = useMutation({ mutationFn: api.deleteChain, onSuccess: invalidate, onError: fail });
 
   const chains = chainsQuery.data?.chains ?? [];
@@ -380,9 +400,9 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
                         </span>
                       </Table.Cell>
                       <Table.Cell>
-                        <Chip color={CHAIN_TYPE_COLOR[c.chain_type] ?? "default"} variant="soft" size="sm">
-                          <Chip.Label>{CHAIN_TYPE_LABELS[c.chain_type] ?? c.chain_type}</Chip.Label>
-                        </Chip>
+                        <StatusChip tone={chainTypeLabel(c.chain_type).tone} title={c.chain_type}>
+                          {chainTypeLabel(c.chain_type).label}
+                        </StatusChip>
                       </Table.Cell>
                       <Table.Cell>
                         <Mono>{c.transport}</Mono>
@@ -435,9 +455,11 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
 
 export default function TunnelsPage() {
   const queryClient = useQueryClient();
-  const [editing, setEditing] = useState<Tunnel | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [chainsOf, setChainsOf] = useState<Tunnel | null>(null);
+  const [editing, setEditing] = useState<TunnelWithMeta | null>(null);
+  const [searchParams] = useSearchParams();
+  const [creating, setCreating] = useState(searchParams.get("create") === "1");
+  const [chainsOf, setChainsOf] = useState<TunnelWithMeta | null>(null);
+  const [search, setSearch] = useState("");
 
   const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
@@ -445,8 +467,17 @@ export default function TunnelsPage() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["tunnels"] });
   const deleteMutation = useMutation({ mutationFn: api.deleteTunnel, onSuccess: invalidate, onError: fail });
 
-  const tunnels = tunnelsQuery.data?.tunnels ?? [];
   const nodes = nodesQuery.data?.nodes ?? [];
+  const tunnels = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const all = tunnelsQuery.data?.tunnels ?? [];
+    if (!q) return all;
+    return all.filter((t) =>
+      [String(t.id), t.name, t.description ?? "", t.ingress_display_address ?? ""].some((field) =>
+        field.toLowerCase().includes(q),
+      ),
+    );
+  }, [tunnelsQuery.data, search]);
 
   return (
     <PageShell>
@@ -460,7 +491,12 @@ export default function TunnelsPage() {
           </Button>
         }
       />
-      {tunnelsQuery.isLoading ? (
+      <ListToolbar>
+        <SearchInput value={search} onChange={setSearch} placeholder="搜索隧道" />
+      </ListToolbar>
+      {tunnelsQuery.isError ? (
+        <TableError onRetry={() => tunnelsQuery.refetch()} />
+      ) : tunnelsQuery.isLoading ? (
         <TableLoading />
       ) : (
         <Table.ScrollContainer>
@@ -471,13 +507,19 @@ export default function TunnelsPage() {
                   ID
                 </Table.Column>
                 <Table.Column id="name">名称</Table.Column>
+                <Table.Column id="mode" defaultWidth={150}>
+                  模式
+                </Table.Column>
                 <Table.Column id="ingress">入口地址</Table.Column>
                 <Table.Column id="description">描述</Table.Column>
                 <Table.Column id="actions" defaultWidth={190}>
                   <span className="flex justify-end">操作</span>
                 </Table.Column>
               </Table.Header>
-              <Table.Body items={tunnels} renderEmptyState={emptyState("暂无数据，点击「新建隧道」开始")}>
+              <Table.Body
+                items={tunnels}
+                renderEmptyState={emptyState(search ? "没有匹配的结果" : "暂无数据，点击「新建隧道」开始")}
+              >
                 {(t) => (
                   <Table.Row id={t.id}>
                     <Table.Cell>
@@ -485,6 +527,18 @@ export default function TunnelsPage() {
                     </Table.Cell>
                     <Table.Cell>
                       <span className="font-medium">{t.name}</span>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <div className="flex items-center gap-1">
+                        <StatusChip tone={forwardModeLabel(t.forward_mode).tone} title={t.forward_mode}>
+                          {forwardModeLabel(t.forward_mode).label}
+                        </StatusChip>
+                        {t.tls_enabled ? (
+                          <StatusChip tone="success" title="链路 TLS（mTLS + 平台证书）">
+                            TLS
+                          </StatusChip>
+                        ) : null}
+                      </div>
                     </Table.Cell>
                     <Table.Cell>{t.ingress_display_address ?? <span className="text-muted">-</span>}</Table.Cell>
                     <Table.Cell>

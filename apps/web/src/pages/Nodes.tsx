@@ -1,26 +1,34 @@
-import { Button, Chip, Pagination, Switch, Table, Tooltip, toast } from "@heroui/react";
+import { Button, Switch, Table, Tooltip, toast } from "@heroui/react";
 import { IconCheck, IconCopy, IconPlus, IconRefresh, IconRotateClockwise } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CreateNodeInput, NodeWithMeta, UpdateNodeInput } from "@tyz/shared";
-import { type FormEvent, useState } from "react";
+import type { CreateNodeInput, NodeWithMeta } from "@tyz/shared";
+import { type FormEvent, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
+import { serviceStateLabel } from "../labels";
 import {
   emptyState,
   type FormErrors,
+  FormFooter,
   FormModal,
   FormShell,
   fail,
   hasErrors,
+  ListToolbar,
   Mono,
   NumberForm,
   PageHeader,
+  Pager,
   PageShell,
   RowButton,
+  SearchInput,
   SideDrawer,
-  SubmitButton,
+  StatusChip,
+  TableError,
   TableLoading,
   TextForm,
+  useCrudMutation,
   useFormValues,
 } from "../ui";
 
@@ -78,25 +86,12 @@ function NodeDialog({
   onClose: () => void;
   onCreated: (token: string) => void;
 }) {
-  const queryClient = useQueryClient();
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["nodes"] });
-
-  const createMutation = useMutation({
-    mutationFn: (input: CreateNodeInput) => api.createNode(input),
-    onSuccess: (data) => {
-      invalidate();
-      onClose();
-      onCreated(data.token);
-    },
-    onError: fail,
-  });
-  const updateMutation = useMutation({
-    mutationFn: (input: UpdateNodeInput) => api.updateNode(node!.id, input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
+  const { save, isPending } = useCrudMutation({
+    invalidateKeys: [["nodes"]],
+    create: (input: CreateNodeInput) => api.createNode(input),
+    update: (id, input: CreateNodeInput) => api.updateNode(id, input),
+    onCreated: (result) => onCreated(result.token),
+    onClose,
   });
 
   return (
@@ -105,12 +100,9 @@ function NodeDialog({
         <NodeForm
           key={node?.id ?? "create"}
           node={node}
-          submitting={createMutation.isPending || updateMutation.isPending}
+          submitting={isPending}
           onCancel={onClose}
-          onSubmit={(input) => {
-            if (node === null) createMutation.mutate(input);
-            else updateMutation.mutate(input);
-          }}
+          onSubmit={(input) => save(node?.id ?? null, input)}
         />
       )}
     </FormModal>
@@ -217,12 +209,7 @@ function NodeForm({
         value={values.description}
         onChange={(v) => set("description", v)}
       />
-      <div className="flex justify-end gap-2">
-        <Button variant="tertiary" onPress={onCancel}>
-          取消
-        </Button>
-        <SubmitButton isPending={submitting}>保存</SubmitButton>
-      </div>
+      <FormFooter onCancel={onCancel} isPending={submitting} />
     </FormShell>
   );
 }
@@ -259,15 +246,6 @@ function TokenDialog({ token, onClose }: { token: string | null; onClose: () => 
 }
 
 // ---- Stats drawer ----
-
-const STATE_COLOR: Record<string, "success" | "default" | "danger"> = {
-  ready: "success",
-  running: "default",
-  failed: "danger",
-  closed: "default",
-  apply_failed: "danger",
-  unknown: "default",
-};
 
 function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => void }) {
   const [page, setPage] = useState(1);
@@ -343,9 +321,9 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
                           </Tooltip.Content>
                         </Tooltip>
                       )}
-                      <Chip color={STATE_COLOR[h.state] ?? "default"} variant="soft" size="sm">
-                        <Chip.Label>{h.state}</Chip.Label>
-                      </Chip>
+                      <StatusChip tone={serviceStateLabel(h.state).tone} title={h.state}>
+                        {serviceStateLabel(h.state).label}
+                      </StatusChip>
                     </div>
                   </div>
                 );
@@ -394,29 +372,7 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
               </Table.Content>
             </Table>
           </Table.ScrollContainer>
-          {pageCount > 1 && (
-            <Pagination size="sm" className="mt-3 justify-center">
-              <Pagination.Content>
-                <Pagination.Item>
-                  <Pagination.Previous isDisabled={safePage === 1} onPress={() => setPage(safePage - 1)}>
-                    <Pagination.PreviousIcon />
-                  </Pagination.Previous>
-                </Pagination.Item>
-                {Array.from({ length: pageCount }, (_, i) => i + 1).map((p) => (
-                  <Pagination.Item key={p}>
-                    <Pagination.Link isActive={p === safePage} onPress={() => setPage(p)}>
-                      {p}
-                    </Pagination.Link>
-                  </Pagination.Item>
-                ))}
-                <Pagination.Item>
-                  <Pagination.Next isDisabled={safePage === pageCount} onPress={() => setPage(safePage + 1)}>
-                    <Pagination.NextIcon />
-                  </Pagination.Next>
-                </Pagination.Item>
-              </Pagination.Content>
-            </Pagination>
-          )}
+          <Pager page={safePage} pageCount={pageCount} onChange={setPage} />
         </section>
       </div>
     </SideDrawer>
@@ -428,9 +384,11 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
 export default function NodesPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<NodeWithMeta | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [searchParams] = useSearchParams();
+  const [creating, setCreating] = useState(searchParams.get("create") === "1");
   const [token, setToken] = useState<string | null>(null);
   const [statsNode, setStatsNode] = useState<NodeWithMeta | null>(null);
+  const [search, setSearch] = useState("");
 
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
 
@@ -450,7 +408,14 @@ export default function NodesPage() {
     onError: fail,
   });
 
-  const nodes = nodesQuery.data?.nodes ?? [];
+  const nodes = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const all = nodesQuery.data?.nodes ?? [];
+    if (!q) return all;
+    return all.filter((n) =>
+      [String(n.id), n.name, n.address, n.display_address ?? ""].some((field) => field.toLowerCase().includes(q)),
+    );
+  }, [nodesQuery.data, search]);
 
   return (
     <PageShell>
@@ -464,7 +429,12 @@ export default function NodesPage() {
           </Button>
         }
       />
-      {nodesQuery.isLoading ? (
+      <ListToolbar>
+        <SearchInput value={search} onChange={setSearch} placeholder="搜索节点 / 地址" />
+      </ListToolbar>
+      {nodesQuery.isError ? (
+        <TableError onRetry={() => nodesQuery.refetch()} />
+      ) : nodesQuery.isLoading ? (
         <TableLoading />
       ) : (
         <Table.ScrollContainer>
@@ -490,7 +460,10 @@ export default function NodesPage() {
                   <span className="flex justify-end">操作</span>
                 </Table.Column>
               </Table.Header>
-              <Table.Body items={nodes} renderEmptyState={emptyState("暂无数据，点击「新建节点」开始")}>
+              <Table.Body
+                items={nodes}
+                renderEmptyState={emptyState(search ? "没有匹配的结果" : "暂无数据，点击「新建节点」开始")}
+              >
                 {(n) => (
                   <Table.Row id={n.id}>
                     <Table.Cell>
@@ -499,11 +472,7 @@ export default function NodesPage() {
                     <Table.Cell>
                       <span className="flex items-center gap-1.5 font-medium">
                         {n.name}
-                        {n.is_public && (
-                          <Chip color="accent" variant="soft" size="sm">
-                            <Chip.Label>公开</Chip.Label>
-                          </Chip>
-                        )}
+                        {n.is_public && <StatusChip tone="accent">公开</StatusChip>}
                       </span>
                     </Table.Cell>
                     <Table.Cell>

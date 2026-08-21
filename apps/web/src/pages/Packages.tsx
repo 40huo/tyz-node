@@ -1,40 +1,34 @@
-import { Button, Chip, Table } from "@heroui/react";
+import { Button, Table } from "@heroui/react";
 import { IconPlus } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CreatePackageInput, Package, RelayNode, Tunnel } from "@tyz/shared";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
+import { formatBytes } from "../format";
 import {
   emptyState,
   type FormErrors,
+  FormFooter,
   FormModal,
   FormShell,
   fail,
   hasErrors,
+  ListToolbar,
   Mono,
   NumberForm,
   PageHeader,
   PageShell,
   RowButton,
+  SearchInput,
   SelectForm,
-  SubmitButton,
+  StatusChip,
+  TableError,
   TableLoading,
   TextForm,
+  useCrudMutation,
   useFormValues,
 } from "../ui";
-
-export function formatBytes(bytes: number): string {
-  if (bytes <= 0) return "不限";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let v = bytes;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${Number.isInteger(v) ? v : v.toFixed(2)} ${units[i]}`;
-}
 
 // ---- Package form ----
 
@@ -75,24 +69,11 @@ function PackageDialog({
   opened: boolean;
   onClose: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["packages"] });
-
-  const createMutation = useMutation({
-    mutationFn: (input: CreatePackageInput) => api.createPackage(input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
-  });
-  const updateMutation = useMutation({
-    mutationFn: (input: CreatePackageInput) => api.updatePackage(pkg!.id, input),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-    onError: fail,
+  const { save, isPending } = useCrudMutation({
+    invalidateKeys: [["packages"]],
+    create: (input: CreatePackageInput) => api.createPackage(input),
+    update: (id, input: CreatePackageInput) => api.updatePackage(id, input),
+    onClose,
   });
 
   return (
@@ -103,12 +84,9 @@ function PackageDialog({
           pkg={pkg}
           nodes={nodes}
           tunnels={tunnels}
-          submitting={createMutation.isPending || updateMutation.isPending}
+          submitting={isPending}
           onCancel={onClose}
-          onSubmit={(input) => {
-            if (pkg === null) createMutation.mutate(input);
-            else updateMutation.mutate(input);
-          }}
+          onSubmit={(input) => save(pkg?.id ?? null, input)}
         />
       )}
     </FormModal>
@@ -194,12 +172,7 @@ function PackageForm({
         onChange={(v) => set("node_ids", Array.isArray(v) ? v.map(Number) : [])}
       />
       <TextForm label="备注" value={values.note} onChange={(v) => set("note", v)} />
-      <div className="flex justify-end gap-2">
-        <Button variant="tertiary" onPress={onCancel}>
-          取消
-        </Button>
-        <SubmitButton isPending={submitting}>保存</SubmitButton>
-      </div>
+      <FormFooter onCancel={onCancel} isPending={submitting} />
     </FormShell>
   );
 }
@@ -210,6 +183,7 @@ export default function PackagesPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<Package | null>(null);
   const [creating, setCreating] = useState(false);
+  const [search, setSearch] = useState("");
 
   const packagesQuery = useQuery({ queryKey: ["packages"], queryFn: api.listPackages });
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
@@ -218,9 +192,14 @@ export default function PackagesPage() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["packages"] });
   const deleteMutation = useMutation({ mutationFn: api.deletePackage, onSuccess: invalidate, onError: fail });
 
-  const packages = packagesQuery.data?.packages ?? [];
   const nodes = nodesQuery.data?.nodes ?? [];
   const tunnels = tunnelsQuery.data?.tunnels ?? [];
+  const packages = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const all = packagesQuery.data?.packages ?? [];
+    if (!q) return all;
+    return all.filter((p) => [String(p.id), p.name, p.note ?? ""].some((field) => field.toLowerCase().includes(q)));
+  }, [packagesQuery.data, search]);
 
   return (
     <PageShell>
@@ -234,7 +213,12 @@ export default function PackagesPage() {
           </Button>
         }
       />
-      {packagesQuery.isLoading ? (
+      <ListToolbar>
+        <SearchInput value={search} onChange={setSearch} placeholder="搜索套餐" />
+      </ListToolbar>
+      {packagesQuery.isError ? (
+        <TableError onRetry={() => packagesQuery.refetch()} />
+      ) : packagesQuery.isLoading ? (
         <TableLoading />
       ) : (
         <Table.ScrollContainer>
@@ -256,7 +240,10 @@ export default function PackagesPage() {
                   <span className="flex justify-end">操作</span>
                 </Table.Column>
               </Table.Header>
-              <Table.Body items={packages} renderEmptyState={emptyState("暂无数据，点击「新建套餐」开始")}>
+              <Table.Body
+                items={packages}
+                renderEmptyState={emptyState(search ? "没有匹配的结果" : "暂无数据，点击「新建套餐」开始")}
+              >
                 {(pkg) => (
                   <Table.Row id={pkg.id}>
                     <Table.Cell>
@@ -275,9 +262,7 @@ export default function PackagesPage() {
                       {pkg.period_days > 0 ? (
                         <Mono>{pkg.period_days} 天</Mono>
                       ) : (
-                        <Chip color="accent" variant="soft" size="sm">
-                          <Chip.Label>永久</Chip.Label>
-                        </Chip>
+                        <StatusChip tone="accent">永久</StatusChip>
                       )}
                     </Table.Cell>
                     <Table.Cell>

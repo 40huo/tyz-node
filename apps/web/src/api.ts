@@ -3,11 +3,16 @@ import type {
   AuditRow,
   Chain,
   CreateChainInput,
+  CreateEndpointInput,
   CreateNodeInput,
   CreatePackageInput,
   CreateRuleInput,
   CreateTunnelInput,
   CreateUserInput,
+  DashboardSummary,
+  DashboardTrafficPoint,
+  Endpoint,
+  EndpointWithMeta,
   NodeStatsRow,
   NodeWithMeta,
   Package,
@@ -15,8 +20,10 @@ import type {
   RelayRule,
   RuleQuotaStatus,
   ServiceHealthRow,
-  Tunnel,
+  TlsStatus,
+  TunnelWithMeta,
   UpdateChainInput,
+  UpdateEndpointInput,
   UpdateNodeInput,
   UpdatePackageInput,
   UpdateRuleInput,
@@ -79,10 +86,11 @@ export const api = {
   nodeStats: (id: number, limit = 100) =>
     request<{ rows: NodeStatsRow[] }>(`/api/admin/nodes/${id}/stats?limit=${limit}`),
 
-  listTunnels: () => request<{ tunnels: Tunnel[] }>("/api/admin/tunnels"),
-  createTunnel: (input: CreateTunnelInput) => request<{ tunnel: Tunnel }>("/api/admin/tunnels", jsonBody(input)),
+  listTunnels: () => request<{ tunnels: TunnelWithMeta[] }>("/api/admin/tunnels"),
+  createTunnel: (input: CreateTunnelInput) =>
+    request<{ tunnel: TunnelWithMeta }>("/api/admin/tunnels", jsonBody(input)),
   updateTunnel: (id: number, input: UpdateTunnelInput) =>
-    request<{ tunnel: Tunnel }>(`/api/admin/tunnels/${id}`, {
+    request<{ tunnel: TunnelWithMeta }>(`/api/admin/tunnels/${id}`, {
       method: "PUT",
       body: JSON.stringify(input),
     }),
@@ -107,6 +115,13 @@ export const api = {
   deleteRule: (id: number) => request<{ ok: true }>(`/api/admin/rules/${id}`, { method: "DELETE" }),
   restartRule: (id: number) =>
     request<{ ok: true; nodes: number }>(`/api/admin/rules/${id}/restart`, { method: "POST" }),
+
+  listEndpoints: () => request<{ endpoints: EndpointWithMeta[] }>("/api/admin/endpoints"),
+  createEndpoint: (input: CreateEndpointInput) =>
+    request<{ endpoint: Endpoint }>("/api/admin/endpoints", jsonBody(input)),
+  updateEndpoint: (id: number, input: UpdateEndpointInput) =>
+    request<{ endpoint: Endpoint }>(`/api/admin/endpoints/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+  deleteEndpoint: (id: number) => request<{ ok: true }>(`/api/admin/endpoints/${id}`, { method: "DELETE" }),
 
   listUsers: () => request<{ users: UserListItem[] }>("/api/admin/users"),
   createUser: (input: CreateUserInput) => request<{ user: User }>("/api/admin/users", jsonBody(input)),
@@ -139,4 +154,15 @@ export const api = {
       }[];
     }>(`/api/admin/nodes/${id}/metrics?hours=${hours}`),
   listAudit: (limit = 100) => request<{ rows: AuditRow[] }>(`/api/admin/audit?limit=${limit}`),
+
+  dashboardSummary: () => request<DashboardSummary>("/api/admin/dashboard/summary"),
+  dashboardTraffic: (hours = 24) =>
+    request<{ hours: number; rows: DashboardTrafficPoint[] }>(`/api/admin/dashboard/traffic?hours=${hours}`),
+
+  tlsStatus: () => request<TlsStatus>("/api/admin/tls/status"),
+  setTlsDomain: (domain: string) =>
+    request<{ ok: true; domain: string }>("/api/admin/settings/tls-domain", {
+      method: "PUT",
+      body: JSON.stringify({ domain }),
+    }),
 };

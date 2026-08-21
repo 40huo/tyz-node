@@ -1,5 +1,5 @@
 import type { ChainType, GostStatsSample, LimiterConfig, ServiceHealthSample, TlsConfig, Transport } from "@tyz/shared";
-import { RelayRuleStatus, UserStatus } from "@tyz/shared";
+import { ForwardMode, RelayRuleStatus, UserStatus } from "@tyz/shared";
 import { sql } from "drizzle-orm";
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
@@ -45,6 +45,21 @@ export const tunnels = sqliteTable("tunnels", {
   name: text("name").notNull(),
   description: text("description"),
   ingress_display_address: text("ingress_display_address"),
+  /**
+   * 'relay' (default): port-multiplexed relay protocol, one exit listener per
+   * tunnel. 'raw': plain tcp/tcp forwarding, one dedicated port per rule on
+   * BOTH nodes — no relay protocol header on the wire.
+   */
+  forward_mode: text("forward_mode").$type<ForwardMode>().notNull().default(ForwardMode.RELAY),
+  /** TLS-wrapped link (platform certs, mutual verification). relay mode only. */
+  tls_enabled: integer("tls_enabled", { mode: "boolean" }).notNull().default(false),
+  /**
+   * Relay-protocol credentials, auto-generated per tunnel. Stored PLAINTEXT
+   * because every recompute re-emits them into agent configs; excluded from
+   * all admin responses (only the agent payload carries them).
+   */
+  relay_auth_user: text("relay_auth_user").notNull().default(""),
+  relay_auth_pass: text("relay_auth_pass").notNull().default(""),
   created_at: text("created_at").notNull().default(createdAt),
   updated_at: text("updated_at").notNull().default(createdAt),
 });
@@ -72,6 +87,21 @@ export const chains = sqliteTable(
   (table) => [index("idx_chains_tunnel").on(table.tunnel_id, table.index), index("idx_chains_node").on(table.node_id)],
 );
 
+/**
+ * Named forwarding destination a relay rule can reference instead of a
+ * manually-entered address. Rules store their own `targets` copy (see below);
+ * editing an endpoint's host/port re-syncs referencing rules via the admin API.
+ */
+export const endpoints = sqliteTable("endpoints", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  host: text("host").notNull(),
+  port: integer("port").notNull(),
+  note: text("note"),
+  created_at: text("created_at").notNull().default(createdAt),
+  updated_at: text("updated_at").notNull().default(createdAt),
+});
+
 export const relayRules = sqliteTable(
   "relay_rules",
   {
@@ -82,15 +112,26 @@ export const relayRules = sqliteTable(
     tunnel_id: integer("tunnel_id").references(() => tunnels.id, { onDelete: "set null" }),
     /** Owning tenant; NULL = admin-managed rule (no quota enforcement). */
     user_id: integer("user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Stored target endpoint this rule forwards to; NULL = manually-entered targets. */
+    endpoint_id: integer("endpoint_id").references(() => endpoints.id, { onDelete: "set null" }),
     targets: text("targets").notNull(),
     status: text("status").$type<RelayRuleStatus>().notNull().default(RelayRuleStatus.CREATED),
     limit: text("limit", { mode: "json" }).$type<LimiterConfig>(),
+    /**
+     * raw-mode tunnels: the rule's dedicated listening port on the EXIT node.
+     * 0 = deterministic auto-allocation from the exit node's port range.
+     */
+    exit_port: integer("exit_port").notNull().default(0),
     upload_traffic: integer("upload_traffic").notNull().default(0),
     download_traffic: integer("download_traffic").notNull().default(0),
     created_at: text("created_at").notNull().default(createdAt),
     updated_at: text("updated_at").notNull().default(createdAt),
   },
-  (table) => [index("idx_rules_tunnel").on(table.tunnel_id), index("idx_rules_user").on(table.user_id)],
+  (table) => [
+    index("idx_rules_tunnel").on(table.tunnel_id),
+    index("idx_rules_user").on(table.user_id),
+    index("idx_rules_endpoint").on(table.endpoint_id),
+  ],
 );
 
 /** Materialized per-node config snapshot; agents poll this with a version number. */
@@ -146,7 +187,7 @@ export const users = sqliteTable("users", {
   updated_at: text("updated_at").notNull().default(createdAt),
 });
 
-/** Purchasable plan; see migrations/0003 for the 0/NULL = unrestricted conventions. */
+/** Purchasable plan; 0/NULL = unrestricted conventions (see migrations/0001_init.sql). */
 export const packages = sqliteTable("packages", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
@@ -261,3 +302,23 @@ export const auditLog = sqliteTable(
   },
   (table) => [index("idx_audit_ts").on(table.ts), index("idx_audit_action").on(table.action, table.ts)],
 );
+
+/** Platform-wide settings (key/value). v1 key: tls_domain (link disguise domain). */
+export const appSettings = sqliteTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updated_at: text("updated_at").notNull().default(createdAt),
+});
+
+/**
+ * Platform TLS material as PEM text, kind ∈ {'ca','server','client'} (see
+ * migrations/0001_init.sql). cert/key PEMs are delivered to agents exclusively through
+ * the authenticated config payload; never selected into admin responses.
+ */
+export const tlsMaterial = sqliteTable("tls_material", {
+  kind: text("kind").primaryKey(),
+  cert_pem: text("cert_pem").notNull(),
+  key_pem: text("key_pem").notNull(),
+  not_after: text("not_after").notNull(),
+  updated_at: text("updated_at").notNull().default(createdAt),
+});

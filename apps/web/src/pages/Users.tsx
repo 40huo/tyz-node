@@ -1,32 +1,32 @@
-import { Button, Chip, ProgressBar, Separator, Table, toast } from "@heroui/react";
+import { Button, ProgressBar, Separator, Table, toast } from "@heroui/react";
 import { IconPlus } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type UserDetail, type UserListItem, UserStatus } from "@tyz/shared";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
+import { formatBytes } from "../format";
+import { quotaStopReasonLabel, userStatusLabel } from "../labels";
 import {
   emptyState,
+  FormFooter,
   FormModal,
   FormShell,
   fail,
+  ListToolbar,
   Mono,
   PageHeader,
   PageShell,
   RowButton,
+  SearchInput,
   SelectForm,
+  StatusChip,
   SubmitButton,
+  TableError,
   TableLoading,
   TextForm,
 } from "../ui";
-import { formatBytes } from "./Packages";
-
-const STOP_REASONS: Record<string, string> = {
-  user_disabled: "用户已禁用",
-  no_subscription: "无有效订阅",
-  expired: "订阅已过期",
-  exhausted: "流量已耗尽",
-};
 
 function CreateUserDialog({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const queryClient = useQueryClient();
@@ -62,12 +62,7 @@ function CreateUserDialog({ opened, onClose }: { opened: boolean; onClose: () =>
         <FormShell onSubmit={onSubmit}>
           <TextForm label="名称" placeholder="用户名" value={name} onChange={setName} error={error} />
           <TextForm label="备注" placeholder="可选" value={note} onChange={setNote} />
-          <div className="flex justify-end gap-2">
-            <Button variant="tertiary" onPress={onClose}>
-              取消
-            </Button>
-            <SubmitButton isPending={createMutation.isPending}>创建</SubmitButton>
-          </div>
+          <FormFooter onCancel={onClose} isPending={createMutation.isPending} label="创建" />
         </FormShell>
       )}
     </FormModal>
@@ -170,21 +165,21 @@ function UserDetailDialog({
                   </Mono>
                 </p>
               ) : (
-                <Chip color="warning" variant="soft" size="sm" className="mt-1">
-                  <Chip.Label>无订阅</Chip.Label>
-                </Chip>
+                <StatusChip tone="warning" className="mt-1">
+                  无订阅
+                </StatusChip>
               )}
             </div>
             <div>
               <p className="text-xs text-muted">转发状态</p>
               {d.decision.stopped ? (
-                <Chip color="danger" variant="soft" size="sm" className="mt-1">
-                  <Chip.Label>已停用（{STOP_REASONS[d.decision.reason ?? ""] ?? d.decision.reason}）</Chip.Label>
-                </Chip>
+                <StatusChip tone="danger" className="mt-1">
+                  已停用（{quotaStopReasonLabel(d.decision.reason).label}）
+                </StatusChip>
               ) : (
-                <Chip color="success" variant="soft" size="sm" className="mt-1">
-                  <Chip.Label>正常</Chip.Label>
-                </Chip>
+                <StatusChip tone="success" className="mt-1">
+                  正常
+                </StatusChip>
               )}
             </div>
           </div>
@@ -251,9 +246,11 @@ function UserDetailDialog({
 
 export default function UsersPage() {
   const queryClient = useQueryClient();
-  const [creating, setCreating] = useState(false);
+  const [searchParams] = useSearchParams();
+  const [creating, setCreating] = useState(searchParams.get("create") === "1");
   const [subscribing, setSubscribing] = useState<UserListItem | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [search, setSearch] = useState("");
 
   const usersQuery = useQuery({ queryKey: ["users"], queryFn: api.listUsers });
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["users"] });
@@ -266,7 +263,16 @@ export default function UsersPage() {
   });
   const deleteMutation = useMutation({ mutationFn: api.deleteUser, onSuccess: invalidate, onError: fail });
 
-  const users = usersQuery.data?.users ?? [];
+  const users = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const all = usersQuery.data?.users ?? [];
+    if (!q) return all;
+    return all.filter((u) =>
+      [String(u.id), u.name, u.note ?? "", u.subscription?.package_name ?? ""].some((field) =>
+        field.toLowerCase().includes(q),
+      ),
+    );
+  }, [usersQuery.data, search]);
 
   return (
     <PageShell>
@@ -280,7 +286,12 @@ export default function UsersPage() {
           </Button>
         }
       />
-      {usersQuery.isLoading ? (
+      <ListToolbar>
+        <SearchInput value={search} onChange={setSearch} placeholder="搜索用户 / 套餐" />
+      </ListToolbar>
+      {usersQuery.isError ? (
+        <TableError onRetry={() => usersQuery.refetch()} />
+      ) : usersQuery.isLoading ? (
         <TableLoading />
       ) : (
         <Table.ScrollContainer>
@@ -299,7 +310,7 @@ export default function UsersPage() {
                   <span className="flex justify-end">操作</span>
                 </Table.Column>
               </Table.Header>
-              <Table.Body items={users} renderEmptyState={emptyState("暂无用户")}>
+              <Table.Body items={users} renderEmptyState={emptyState(search ? "没有匹配的结果" : "暂无用户")}>
                 {(u) => (
                   <Table.Row id={u.id}>
                     <Table.Cell>
@@ -309,25 +320,13 @@ export default function UsersPage() {
                       <span className="font-medium">{u.name}</span>
                     </Table.Cell>
                     <Table.Cell>
-                      {u.status === "active" ? (
-                        <Chip color="success" variant="soft" size="sm">
-                          <Chip.Label>正常</Chip.Label>
-                        </Chip>
-                      ) : (
-                        <Chip variant="soft" size="sm">
-                          <Chip.Label>已禁用</Chip.Label>
-                        </Chip>
-                      )}
+                      <StatusChip tone={userStatusLabel(u.status).tone}>{userStatusLabel(u.status).label}</StatusChip>
                     </Table.Cell>
                     <Table.Cell>
                       {u.subscription ? (
                         <span className="flex items-center gap-1.5 text-sm">
                           {u.subscription.package_name}
-                          {u.subscription.expired && (
-                            <Chip color="danger" variant="soft" size="sm">
-                              <Chip.Label>已过期</Chip.Label>
-                            </Chip>
-                          )}
+                          {u.subscription.expired && <StatusChip tone="danger">已过期</StatusChip>}
                         </span>
                       ) : (
                         <span className="text-muted">-</span>

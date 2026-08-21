@@ -1,6 +1,17 @@
-import type { Chain, NodeConfigData, RelayNode, RelayRule, TlsConfig, Tunnel } from "@tyz/shared";
+import type {
+  Chain,
+  ForwardMode,
+  NodeConfigData,
+  RelayNode,
+  RelayRule,
+  TlsConfig,
+  Tunnel,
+  TunnelPayload,
+} from "@tyz/shared";
+import { ChainType, ForwardMode as ForwardModeEnum, Transport } from "@tyz/shared";
 import { eq, inArray, sql } from "drizzle-orm";
 import { applyRuleQuotas } from "../services/quota";
+import { ensureTlsMaterial } from "../services/tls";
 import type { Database } from "./index";
 import { chains, nodeConfigs, relayNodes, relayRules, tunnels } from "./schema";
 
@@ -16,7 +27,7 @@ function opt<T>(value: T | null | undefined): T | undefined {
 }
 
 type NodeRow = typeof relayNodes.$inferSelect;
-type TunnelRow = typeof tunnels.$inferSelect;
+export type TunnelRow = typeof tunnels.$inferSelect;
 type RuleRow = typeof relayRules.$inferSelect;
 
 export function toRelayNode<T extends Omit<NodeRow, "token_hash" | "tls_config" | "token_hint">>(row: T): RelayNode {
@@ -29,7 +40,21 @@ export function toRelayNode<T extends Omit<NodeRow, "token_hash" | "tls_config" 
   };
 }
 
+/**
+ * Admin-facing Tunnel entity. relay_auth_user/relay_auth_pass are stripped —
+ * the credentials travel only inside the agent payload (toTunnelPayload).
+ */
 export function toTunnel(row: TunnelRow): Tunnel {
+  const { relay_auth_user: _u, relay_auth_pass: _p, ...entity } = row;
+  return {
+    ...entity,
+    description: opt(entity.description),
+    ingress_display_address: opt(entity.ingress_display_address),
+  };
+}
+
+/** Agent payload shape: entity + relay link credentials. */
+export function toTunnelPayload(row: TunnelRow): TunnelPayload {
   return {
     ...row,
     description: opt(row.description),
@@ -43,6 +68,7 @@ export function toRelayRule(row: RuleRow): RelayRule {
     description: opt(row.description),
     tunnel_id: opt(row.tunnel_id),
     user_id: opt(row.user_id),
+    endpoint_id: opt(row.endpoint_id),
     limit: opt(row.limit),
   };
 }
@@ -90,10 +116,9 @@ export async function getChainsForNode(db: Database, nodeId: number): Promise<Ch
   return rows;
 }
 
-export async function getTunnelsByIds(db: Database, ids: number[]): Promise<Tunnel[]> {
+export async function getTunnelsByIds(db: Database, ids: number[]): Promise<TunnelRow[]> {
   if (ids.length === 0) return [];
-  const rows = await db.select().from(tunnels).where(inArray(tunnels.id, ids)).all();
-  return rows.map(toTunnel);
+  return db.select().from(tunnels).where(inArray(tunnels.id, ids)).all();
 }
 
 export async function getChainsForTunnels(db: Database, tunnelIds: number[]): Promise<Chain[]> {
@@ -157,6 +182,56 @@ export async function deleteNodeConfigSnapshot(db: Database, nodeId: number): Pr
 
 // ---- Aggregation ----
 
+function randomHex(bytes: number): string {
+  const raw = crypto.getRandomValues(new Uint8Array(bytes));
+  return Array.from(raw, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Relay link credentials for tunnels created before the columns existed (or
+ * wiped): generate once and persist, so both link ends see the same values on
+ * every subsequent aggregation.
+ */
+async function ensureTunnelRelayAuth(db: Database, rows: TunnelRow[]): Promise<void> {
+  for (const row of rows) {
+    if (row.relay_auth_user && row.relay_auth_pass) continue;
+    const user = `relay-${row.id}-${randomHex(4)}`;
+    const pass = randomHex(16);
+    await db.update(tunnels).set({ relay_auth_user: user, relay_auth_pass: pass }).where(eq(tunnels.id, row.id));
+    row.relay_auth_user = user;
+    row.relay_auth_pass = pass;
+  }
+}
+
+/**
+ * Normalize a tunnel's mode flags against its actual chain shape. The admin
+ * API rejects invalid combinations on write; this guard keeps a hand-edited or
+ * racy DB state from reaching agents as a config the builder cannot render
+ * consistently on both ends:
+ * - raw is valid for the single-node shape (one `in` chain — direct forward,
+ *   no exit port pairs) and the two-hop shape (one `in` + one `out`); anything
+ *   else degrades to relay (which handles 1/2/3+ hops);
+ * - tls_enabled requires the 2-hop shape with the out transport grpc|tls,
+ *   otherwise the link stays plaintext (consistent on both ends).
+ */
+export function normalizeTunnelMode(
+  row: TunnelRow,
+  tunnelChains: Chain[],
+): { forward_mode: ForwardMode; tls_enabled: boolean } {
+  const outs = tunnelChains.filter((c) => c.chain_type === ChainType.OUT);
+  const ins = tunnelChains.filter((c) => c.chain_type === ChainType.IN);
+  const twoHop = tunnelChains.length === 2 && ins.length === 1 && outs.length === 1;
+  const singleNode = tunnelChains.length === 1 && ins.length === 1;
+  const forward_mode: ForwardMode =
+    row.forward_mode === ForwardModeEnum.RAW && (twoHop || singleNode) ? ForwardModeEnum.RAW : ForwardModeEnum.RELAY;
+  const tls_enabled =
+    row.tls_enabled &&
+    forward_mode === "relay" &&
+    twoHop &&
+    (outs[0]?.transport === Transport.GRPC || outs[0]?.transport === Transport.TLS);
+  return { forward_mode, tls_enabled };
+}
+
 /**
  * Build the NodeConfigData for one node:
  * node -> chains touching this node -> tunnels -> rules attached to those tunnels
@@ -170,12 +245,26 @@ export async function aggregateNodeConfig(db: Database, nodeId: number): Promise
 
   const nodeChains = await getChainsForNode(db, nodeId);
   const tunnelIds = [...new Set(nodeChains.map((c) => c.tunnel_id))];
-  const tunnelsOf = await getTunnelsByIds(db, tunnelIds);
+  const tunnelRows = await getTunnelsByIds(db, tunnelIds);
+  await ensureTunnelRelayAuth(db, tunnelRows);
   const rules = await applyRuleQuotas(db, await getRulesForTunnels(db, tunnelIds));
   const allChains = await getChainsForTunnels(db, tunnelIds);
   // Node records for every node the chains reference, so agents can resolve
   // dial addresses per hop (each chain row's node_id -> address + port range).
   const chainNodes = await getNodesByIds(db, [...new Set(allChains.map((c) => c.node_id))]);
+
+  const chainsOf = (tunnelId: number) => allChains.filter((c) => c.tunnel_id === tunnelId);
+  const tunnelsOf: TunnelPayload[] = tunnelRows.map((row) => ({
+    ...toTunnelPayload(row),
+    ...normalizeTunnelMode(row, chainsOf(row.id)),
+  }));
+
+  let tlsMaterial: NodeConfigData["tls_material"];
+  if (tunnelsOf.some((t) => t.tls_enabled)) {
+    // Generates on first use (and after domain change); the snapshot content
+    // diff turns any PEM change into a config version bump + WS push.
+    tlsMaterial = await ensureTlsMaterial(db);
+  }
 
   const config: NodeConfigData = {
     node,
@@ -184,6 +273,7 @@ export async function aggregateNodeConfig(db: Database, nodeId: number): Promise
     tunnels: tunnelsOf,
     chains: allChains,
     tls: await getNodeTlsConfig(db, nodeId),
+    ...(tlsMaterial ? { tls_material: tlsMaterial } : {}),
   };
   return config;
 }

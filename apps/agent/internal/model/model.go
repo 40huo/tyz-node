@@ -25,6 +25,17 @@ const (
 	TransportMWSS Transport = "mwss"
 )
 
+// ForwardMode selects how a two-node tunnel forwards traffic. Relay (default)
+// multiplexes every rule over one relay-protocol listener on the exit node;
+// Raw gives each rule a dedicated tcp/tcp port pair with no custom protocol
+// header on the wire.
+type ForwardMode string
+
+const (
+	ForwardModeRelay ForwardMode = "relay"
+	ForwardModeRaw   ForwardMode = "raw"
+)
+
 // TlsConfig carries the auto-certificate hints from the control plane.
 type TlsConfig struct {
 	CommonName   *string `json:"commonName,omitempty"`
@@ -42,6 +53,27 @@ type Tunnel struct {
 	ID int `json:"id"`
 	// ingress_display_address is a client-facing display field (shown in the
 	// admin panel); it never takes part in GOST config generation.
+	// Newer fields are optional-tolerant: legacy cached payloads (offline
+	// bootstrap replays last-config.json through the current builder) lack
+	// them entirely; the zero values mean "relay, no TLS, no link auth".
+	ForwardMode   ForwardMode `json:"forward_mode,omitempty"`
+	TLSEnabled    bool        `json:"tls_enabled,omitempty"`
+	RelayAuthUser string      `json:"relay_auth_user,omitempty"`
+	RelayAuthPass string      `json:"relay_auth_pass,omitempty"`
+}
+
+// TLSMaterial is the platform-issued link TLS material (PEM text). Present
+// only when at least one of the node's tunnels enables TLS; the agent writes
+// it to its certs directory and the generated GOST config references the
+// files (mutual TLS: exits serve the server cert and verify clients against
+// the CA, entries present the client cert and verify the exit).
+type TLSMaterial struct {
+	SNI        string `json:"sni"`
+	CACert     string `json:"ca_cert"`
+	ServerCert string `json:"server_cert"`
+	ServerKey  string `json:"server_key"`
+	ClientCert string `json:"client_cert"`
+	ClientKey  string `json:"client_key"`
 }
 
 type Chain struct {
@@ -62,6 +94,11 @@ type RelayRule struct {
 	TunnelID   *int   `json:"tunnel_id"` // nil = not deployed anywhere
 	Targets    string `json:"targets"`
 	Status     string `json:"status"`
+	// ExitPort is the rule's dedicated port on the exit node (raw-mode
+	// tunnels). 0 = auto-allocate from the exit node's port range with the
+	// same deterministic formula the entry uses to dial it. Absent in legacy
+	// payloads.
+	ExitPort int `json:"exit_port,omitempty"`
 	// Quota is the traffic allowance computed by the control plane; nil = none.
 	// (user_id is intentionally not modeled — the agent only consumes the
 	// derived quota, and legacy payloads carry it as a string.)
@@ -96,6 +133,8 @@ type NodeConfigData struct {
 	Tunnels []Tunnel    `json:"tunnels"`
 	Chains  []Chain     `json:"chains"`
 	TLS     *TlsConfig  `json:"tls,omitempty"`
+	// TLSMaterial is present only when a tunnel of this node enables link TLS.
+	TLSMaterial *TLSMaterial `json:"tls_material,omitempty"`
 }
 
 // AgentConfigResponse is the body of a 200 from GET /api/agent/config.

@@ -1,10 +1,13 @@
 import { z } from "zod";
 import {
+  type Endpoint,
+  ForwardMode,
   type Package,
   type RelayNode,
   type RelayRule,
   RelayRuleStatus,
   type RuleQuota,
+  type Tunnel,
   type User,
   UserStatus,
   type UserSubscription,
@@ -12,6 +15,7 @@ import {
 import type { GostStatsSample } from "./schemas";
 import {
   chainTypeSchema,
+  forwardModeSchema,
   limiterConfigSchema,
   relayRuleStatusSchema,
   transportSchema,
@@ -72,10 +76,22 @@ export const createTunnelSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   ingress_display_address: z.string().optional(),
+  forward_mode: forwardModeSchema.default(ForwardMode.RELAY),
+  tls_enabled: z.boolean().default(false),
 });
 export const updateTunnelSchema = createTunnelSchema.partial();
 export type CreateTunnelInput = z.infer<typeof createTunnelSchema>;
 export type UpdateTunnelInput = z.infer<typeof updateTunnelSchema>;
+
+/**
+ * Tunnel as listed by the admin panel: entity + derived chain count. The
+ * count drives the effective-mode display — a single-hop tunnel (one `in`
+ * chain, no exit) always renders as direct tcp forwarding regardless of the
+ * stored forward_mode, so the panel shows it as 裸转发 instead of relay.
+ */
+export interface TunnelWithMeta extends Tunnel {
+  chain_count: number;
+}
 
 // ---- Chain CRUD ----
 
@@ -100,13 +116,38 @@ export const createRuleSchema = z.object({
   listen_port: z.number().int().positive(),
   tunnel_id: z.number().int().positive().nullable().optional(),
   targets: z.string().min(1),
+  /** Stored endpoint to forward to; when set, the server overrides `targets`
+   * with the endpoint's composed address. null = manual address. */
+  endpoint_id: z.number().int().positive().nullable().optional(),
   user_id: z.number().int().positive().nullable().optional(),
   status: relayRuleStatusSchema.default(RelayRuleStatus.CREATED),
+  /** raw-mode tunnels: dedicated exit-side port. 0 = auto-allocate. */
+  exit_port: z.number().int().min(0).max(65535).default(0),
   limit: limiterConfigSchema.nullable().optional(),
 });
 export const updateRuleSchema = createRuleSchema.partial();
 export type CreateRuleInput = z.infer<typeof createRuleSchema>;
 export type UpdateRuleInput = z.infer<typeof updateRuleSchema>;
+
+// ---- Target endpoints ----
+
+export const createEndpointSchema = z.object({
+  name: z.string().min(1),
+  host: z
+    .string()
+    .min(1)
+    .refine((v) => !/\s/.test(v) && !v.includes("://"), "主机名不能包含空格或协议前缀"),
+  port: z.number().int().min(1).max(65535),
+  note: z.string().optional(),
+});
+export const updateEndpointSchema = createEndpointSchema.partial();
+export type CreateEndpointInput = z.infer<typeof createEndpointSchema>;
+export type UpdateEndpointInput = z.infer<typeof updateEndpointSchema>;
+
+/** GET /endpoints row: entity + how many rules reference it (drives delete protection). */
+export interface EndpointWithMeta extends Endpoint {
+  rule_count: number;
+}
 
 // ---- Users & packages ----
 
@@ -138,6 +179,26 @@ export const subscribeSchema = z.object({
   package_id: z.number().int().positive(),
 });
 export type SubscribeInput = z.infer<typeof subscribeSchema>;
+
+// ---- Link TLS (platform-issued certs) ----
+
+export const setTlsDomainSchema = z.object({
+  domain: z
+    .string()
+    .min(1)
+    .regex(/^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/, {
+      message: "必须是合法域名，如 relay.example.com",
+    }),
+});
+export type SetTlsDomainInput = z.infer<typeof setTlsDomainSchema>;
+
+/** GET /tls/status response body — expiry metadata only, never key material. */
+export interface TlsStatus {
+  domain: string | null;
+  ca_not_after: string | null;
+  server_not_after: string | null;
+  client_not_after: string | null;
+}
 
 /** Rule row as listed by the admin panel, with the derived quota state of its owner. */
 export interface AdminRuleRow extends RelayRule {
@@ -198,4 +259,48 @@ export interface NodeStatsRow {
   service: string;
   stats: GostStatsSample;
   reported_at: string;
+}
+
+// ---- Dashboard ----
+
+/** GET /api/admin/dashboard/summary response body (read-only aggregation). */
+export interface DashboardSummary {
+  counts: {
+    nodes: number;
+    tunnels: number;
+    rules: {
+      total: number;
+      running: number;
+      paused: number;
+      created: number;
+      error: number;
+      /** Derived quota hard-stops (dropped from node configs), independent of status. */
+      quota_stopped: number;
+    };
+    users: { total: number; active: number; disabled: number; subscribed: number };
+  };
+  nodes_health: {
+    node_id: number;
+    name: string;
+    /** Services present in the node's latest health snapshot (0 = agent idle/offline). */
+    services: number;
+    ready: number;
+    /** failed + apply_failed states. */
+    failed: number;
+    /** Max concurrent connections across the node's services over the last 24h. */
+    conn_peak_24h: number;
+    last_report: string | null;
+  }[];
+  traffic: {
+    today: { upload: number; download: number };
+    yesterday: { upload: number; download: number };
+  };
+}
+
+/** GET /api/admin/dashboard/traffic row: hourly billed bytes, zero-filled across the window. */
+export interface DashboardTrafficPoint {
+  /** UTC hour bucket, '2026-08-21T04:00:00.000Z'. */
+  hour_ts: string;
+  billed_upload: number;
+  billed_download: number;
 }
