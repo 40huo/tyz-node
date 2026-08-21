@@ -180,8 +180,16 @@ const serviceHealthSampleSchema = z.object({
 
 export const agentStatsBatchSchema = z
   .object({
-    samples: z.array(gostStatsSampleSchema).default([]),
-    health: z.array(serviceHealthSampleSchema).default([]),
+    // The agent marshals nil Go slices as JSON null — accept null alongside
+    // absent (zod's .default only covers absence) and normalize to [].
+    samples: z
+      .array(gostStatsSampleSchema)
+      .nullish()
+      .transform((v) => v ?? []),
+    health: z
+      .array(serviceHealthSampleSchema)
+      .nullish()
+      .transform((v) => v ?? []),
   })
   .refine((v) => v.samples.length > 0 || v.health.length > 0, {
     message: "batch must carry samples or health",
