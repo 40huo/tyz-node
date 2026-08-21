@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  type Endpoint,
   ForwardMode,
   type Package,
   type RelayNode,
@@ -115,6 +116,9 @@ export const createRuleSchema = z.object({
   listen_port: z.number().int().positive(),
   tunnel_id: z.number().int().positive().nullable().optional(),
   targets: z.string().min(1),
+  /** Stored endpoint to forward to; when set, the server overrides `targets`
+   * with the endpoint's composed address. null = manual address. */
+  endpoint_id: z.number().int().positive().nullable().optional(),
   user_id: z.number().int().positive().nullable().optional(),
   status: relayRuleStatusSchema.default(RelayRuleStatus.CREATED),
   /** raw-mode tunnels: dedicated exit-side port. 0 = auto-allocate. */
@@ -124,6 +128,26 @@ export const createRuleSchema = z.object({
 export const updateRuleSchema = createRuleSchema.partial();
 export type CreateRuleInput = z.infer<typeof createRuleSchema>;
 export type UpdateRuleInput = z.infer<typeof updateRuleSchema>;
+
+// ---- Target endpoints ----
+
+export const createEndpointSchema = z.object({
+  name: z.string().min(1),
+  host: z
+    .string()
+    .min(1)
+    .refine((v) => !/\s/.test(v) && !v.includes("://"), "主机名不能包含空格或协议前缀"),
+  port: z.number().int().min(1).max(65535),
+  note: z.string().optional(),
+});
+export const updateEndpointSchema = createEndpointSchema.partial();
+export type CreateEndpointInput = z.infer<typeof createEndpointSchema>;
+export type UpdateEndpointInput = z.infer<typeof updateEndpointSchema>;
+
+/** GET /endpoints row: entity + how many rules reference it (drives delete protection). */
+export interface EndpointWithMeta extends Endpoint {
+  rule_count: number;
+}
 
 // ---- Users & packages ----
 

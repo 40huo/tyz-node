@@ -14,10 +14,14 @@
 --   tunnel-4  two-node relay + TLS (grpc): shared exit listener :16901 wrapped
 --             in TLS1.3/h2 with platform certs (domain relay.local.test),
 --             mutual verification, relay auth and an entry-IP admission
+--
+-- endpoint-1 is the stored target for rule-1 (same address the rule already
+-- forwards to) — demonstrates the endpoint <-> rule association.
 
 DELETE FROM gost_stats;
 DELETE FROM node_configs;
 DELETE FROM relay_rules;
+DELETE FROM endpoints;
 DELETE FROM chains;
 DELETE FROM tunnels;
 DELETE FROM relay_nodes;
@@ -52,12 +56,16 @@ VALUES
   (6, 4, 1, 'in',  'grpc', 0, 'round', 0),
   (7, 4, 2, 'out', 'grpc', 1, 'round', 16901);
 
-INSERT INTO relay_rules (id, name, listen_port, tunnel_id, targets, status, exit_port)
+INSERT INTO endpoints (id, name, host, port, note)
 VALUES
-  (1, 'rule-1', 8080,   1, 'example.com:80', 'running', 0),
-  (2, 'rule-2', 16535,  2, '127.0.0.1:19180', 'running', 0),
-  (3, 'rule-3', 16548,  2, '127.0.0.1:19181', 'running', 0),
-  (4, 'rule-4', 16556,  3, '127.0.0.1:19180', 'running', 26556),
-  (5, 'rule-5', 16557,  3, '127.0.0.1:19181', 'running', 26557),
-  (6, 'rule-6', 16558,  4, '127.0.0.1:19180', 'running', 0),
-  (7, 'rule-7', 16559,  4, '127.0.0.1:19181', 'running', 0);
+  (1, '示例端点', 'example.com', 80, 'seed 演示：被 rule-1 引用');
+
+INSERT INTO relay_rules (id, name, listen_port, tunnel_id, endpoint_id, targets, status, exit_port)
+VALUES
+  (1, 'rule-1', 8080,   1, 1, 'example.com:80', 'running', 0),
+  (2, 'rule-2', 16535,  2, NULL, '127.0.0.1:19180', 'running', 0),
+  (3, 'rule-3', 16548,  2, NULL, '127.0.0.1:19181', 'running', 0),
+  (4, 'rule-4', 16556,  3, NULL, '127.0.0.1:19180', 'running', 26556),
+  (5, 'rule-5', 16557,  3, NULL, '127.0.0.1:19181', 'running', 26557),
+  (6, 'rule-6', 16558,  4, NULL, '127.0.0.1:19180', 'running', 0),
+  (7, 'rule-7', 16559,  4, NULL, '127.0.0.1:19181', 'running', 0);

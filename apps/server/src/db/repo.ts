@@ -68,6 +68,7 @@ export function toRelayRule(row: RuleRow): RelayRule {
     description: opt(row.description),
     tunnel_id: opt(row.tunnel_id),
     user_id: opt(row.user_id),
+    endpoint_id: opt(row.endpoint_id),
     limit: opt(row.limit),
   };
 }

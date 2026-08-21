@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type AdminRuleRow,
   type CreateRuleInput,
+  type EndpointWithMeta,
+  endpointAddress,
   ForwardMode,
   limiterConfigSchema,
   type RelayRule,
@@ -61,6 +63,8 @@ interface RuleFormValues {
   name: string;
   listen_port: number;
   targets: string;
+  /** "" = 手动输入地址；否则为端点 id（字符串形式，提交时转数字）。 */
+  endpoint_id: string | null;
   status: string;
   description: string;
   tunnel_id: string | null;
@@ -75,6 +79,7 @@ function ruleFormValues(rule: RelayRule | null): RuleFormValues {
         name: rule.name,
         listen_port: rule.listen_port,
         targets: rule.targets,
+        endpoint_id: rule.endpoint_id === undefined ? null : String(rule.endpoint_id),
         tunnel_id: rule.tunnel_id === undefined ? null : String(rule.tunnel_id),
         user_id: rule.user_id === undefined ? null : String(rule.user_id),
         status: rule.status,
@@ -86,6 +91,7 @@ function ruleFormValues(rule: RelayRule | null): RuleFormValues {
         name: "",
         listen_port: 0,
         targets: "",
+        endpoint_id: null,
         tunnel_id: null,
         user_id: null,
         status: RelayRuleStatus.CREATED,
@@ -99,12 +105,14 @@ function RuleDialog({
   rule,
   tunnels,
   users,
+  endpoints,
   opened,
   onClose,
 }: {
   rule: RelayRule | null;
   tunnels: Tunnel[];
   users: UserListItem[];
+  endpoints: EndpointWithMeta[];
   opened: boolean;
   onClose: () => void;
 }) {
@@ -128,6 +136,7 @@ function RuleDialog({
           rule={rule}
           tunnels={tunnels}
           users={users}
+          endpoints={endpoints}
           submitting={isPending}
           onCancel={onClose}
           onSubmit={(input) => save(rule?.id ?? null, input)}
@@ -141,6 +150,7 @@ function RuleForm({
   rule,
   tunnels,
   users,
+  endpoints,
   onSubmit,
   submitting,
   onCancel,
@@ -148,6 +158,7 @@ function RuleForm({
   rule: RelayRule | null;
   tunnels: Tunnel[];
   users: UserListItem[];
+  endpoints: EndpointWithMeta[];
   onSubmit: (input: CreateRuleInput) => void;
   submitting: boolean;
   onCancel: () => void;
@@ -155,21 +166,26 @@ function RuleForm({
   const { values, set } = useFormValues(() => ruleFormValues(rule));
   const [errors, setErrors] = useState<FormErrors<RuleFormValues>>({});
 
+  const selectedEndpoint = endpoints.find((e) => String(e.id) === values.endpoint_id);
+
   const onSubmitForm = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const errs: FormErrors<RuleFormValues> = {};
     if (!values.name.trim()) errs.name = "请输入名称";
-    if (!values.targets.trim()) errs.targets = "请输入目标地址";
+    if (!values.endpoint_id && !values.targets.trim()) errs.targets = "请输入目标地址";
     if (values.listen_port < 1 || values.listen_port > 65535) errs.listen_port = "端口范围 1-65535";
     const limitError = validateLimitText(values.limitText);
     if (limitError) errs.limitText = limitError;
     setErrors(errs);
     if (hasErrors(errs)) return;
 
+    const endpointId = values.endpoint_id ? Number(values.endpoint_id) : null;
     onSubmit({
       name: values.name,
       listen_port: values.listen_port,
-      targets: values.targets,
+      // 关联端点时地址以端点为准（服务端同样会覆盖）；手动输入才使用文本框内容。
+      endpoint_id: endpointId,
+      targets: selectedEndpoint ? endpointAddress(selectedEndpoint.host, selectedEndpoint.port) : values.targets,
       status: values.status as RelayRuleStatus,
       description: values.description || undefined,
       tunnel_id: values.tunnel_id ? Number(values.tunnel_id) : null,
@@ -198,14 +214,33 @@ function RuleForm({
           onChange={(v) => set("status", String(v))}
         />
       </div>
-      <TextForm
-        label="目标地址"
-        isRequired
-        placeholder="如 example.com:80"
-        value={values.targets}
-        onChange={(v) => set("targets", v)}
-        error={errors.targets}
+      <SelectForm
+        label="目标端点"
+        placeholder="手动输入地址"
+        options={[
+          { value: "", label: "手动输入地址" },
+          ...endpoints.map((e) => ({ value: String(e.id), label: `${e.name} (${endpointAddress(e.host, e.port)})` })),
+        ]}
+        value={values.endpoint_id}
+        onChange={(v) => set("endpoint_id", (v as string | null) ?? null)}
       />
+      {values.endpoint_id ? (
+        <TextForm
+          label="目标地址"
+          isReadOnly
+          hint="由所选端点决定，修改端点地址将自动同步到该规则"
+          value={selectedEndpoint ? endpointAddress(selectedEndpoint.host, selectedEndpoint.port) : values.targets}
+        />
+      ) : (
+        <TextForm
+          label="目标地址"
+          isRequired
+          placeholder="如 example.com:80"
+          value={values.targets}
+          onChange={(v) => set("targets", v)}
+          error={errors.targets}
+        />
+      )}
       <div className="grid grid-cols-2 gap-3">
         <SelectForm
           label="所属隧道"
@@ -286,6 +321,7 @@ export default function RulesPage() {
   const rulesQuery = useQuery({ queryKey: ["rules"], queryFn: api.listRules });
   const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
   const usersQuery = useQuery({ queryKey: ["users"], queryFn: api.listUsers });
+  const endpointsQuery = useQuery({ queryKey: ["endpoints"], queryFn: api.listEndpoints });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["rules"] });
   const deleteMutation = useMutation({ mutationFn: api.deleteRule, onSuccess: invalidate, onError: fail });
@@ -297,6 +333,7 @@ export default function RulesPage() {
 
   const tunnels = tunnelsQuery.data?.tunnels ?? [];
   const users = usersQuery.data?.users ?? [];
+  const endpoints = endpointsQuery.data?.endpoints ?? [];
   const rules: AdminRuleRow[] = rulesQuery.data?.rules ?? [];
 
   const counts = useMemo(() => {
@@ -394,6 +431,11 @@ export default function RulesPage() {
                     </Table.Cell>
                     <Table.Cell>
                       <Mono>{r.targets}</Mono>
+                      {r.endpoint_id !== undefined && (
+                        <span className="ml-2 text-xs text-muted">
+                          {endpoints.find((e) => e.id === r.endpoint_id)?.name ?? `端点 #${r.endpoint_id}`}
+                        </span>
+                      )}
                     </Table.Cell>
                     <Table.Cell>
                       {r.tunnel_id ? (
@@ -451,11 +493,19 @@ export default function RulesPage() {
         </Table.ScrollContainer>
       )}
 
-      <RuleDialog rule={null} tunnels={tunnels} users={users} opened={creating} onClose={() => setCreating(false)} />
+      <RuleDialog
+        rule={null}
+        tunnels={tunnels}
+        users={users}
+        endpoints={endpoints}
+        opened={creating}
+        onClose={() => setCreating(false)}
+      />
       <RuleDialog
         rule={editing}
         tunnels={tunnels}
         users={users}
+        endpoints={endpoints}
         opened={editing !== null}
         onClose={() => setEditing(null)}
       />

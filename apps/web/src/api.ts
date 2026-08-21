@@ -3,6 +3,7 @@ import type {
   AuditRow,
   Chain,
   CreateChainInput,
+  CreateEndpointInput,
   CreateNodeInput,
   CreatePackageInput,
   CreateRuleInput,
@@ -10,6 +11,8 @@ import type {
   CreateUserInput,
   DashboardSummary,
   DashboardTrafficPoint,
+  Endpoint,
+  EndpointWithMeta,
   NodeStatsRow,
   NodeWithMeta,
   Package,
@@ -20,6 +23,7 @@ import type {
   TlsStatus,
   TunnelWithMeta,
   UpdateChainInput,
+  UpdateEndpointInput,
   UpdateNodeInput,
   UpdatePackageInput,
   UpdateRuleInput,
@@ -111,6 +115,13 @@ export const api = {
   deleteRule: (id: number) => request<{ ok: true }>(`/api/admin/rules/${id}`, { method: "DELETE" }),
   restartRule: (id: number) =>
     request<{ ok: true; nodes: number }>(`/api/admin/rules/${id}/restart`, { method: "POST" }),
+
+  listEndpoints: () => request<{ endpoints: EndpointWithMeta[] }>("/api/admin/endpoints"),
+  createEndpoint: (input: CreateEndpointInput) =>
+    request<{ endpoint: Endpoint }>("/api/admin/endpoints", jsonBody(input)),
+  updateEndpoint: (id: number, input: UpdateEndpointInput) =>
+    request<{ endpoint: Endpoint }>(`/api/admin/endpoints/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+  deleteEndpoint: (id: number) => request<{ ok: true }>(`/api/admin/endpoints/${id}`, { method: "DELETE" }),
 
   listUsers: () => request<{ users: UserListItem[] }>("/api/admin/users"),
   createUser: (input: CreateUserInput) => request<{ user: User }>("/api/admin/users", jsonBody(input)),

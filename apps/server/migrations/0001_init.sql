@@ -2,9 +2,10 @@
 --
 -- This file is the COMPLETE current schema. History note: it squashes the
 -- original incremental migrations (init / service health / quota packages /
--- traffic ledger + audit / rate + metrics / relay modes + link TLS). Apply on
--- a FRESH database; environments that already applied the old numbered
--- migrations must NOT re-apply this file (wrangler tracks by filename).
+-- traffic ledger + audit / rate + metrics / relay modes + link TLS / target
+-- endpoints). Apply on a FRESH database; environments that already applied
+-- the old numbered migrations must NOT re-apply this file (wrangler tracks
+-- by filename).
 
 CREATE TABLE relay_nodes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,6 +82,22 @@ CREATE TABLE chains (
 CREATE INDEX idx_chains_tunnel ON chains(tunnel_id, idx);
 CREATE INDEX idx_chains_node ON chains(node_id);
 
+-- Named forwarding destinations (host:port) relay rules can reference
+-- instead of a manually-entered address. Rules keep their own `targets` copy
+-- (the config pipeline never joins endpoints); the admin API re-syncs
+-- referencing rules whenever an endpoint's host/port change and refuses to
+-- delete an endpoint that is still referenced. ON DELETE SET NULL is only a
+-- backstop for direct DB writes.
+CREATE TABLE endpoints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  host TEXT NOT NULL,
+  port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
 CREATE TABLE relay_rules (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -89,6 +106,9 @@ CREATE TABLE relay_rules (
   tunnel_id INTEGER REFERENCES tunnels(id) ON DELETE SET NULL,
   -- Owning tenant; NULL = admin-managed rule (no quota enforcement).
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  -- Stored target endpoint; NULL = manually-entered targets. While set,
+  -- `targets` mirrors endpointAddress(endpoint) (host:port, IPv6 bracketed).
+  endpoint_id INTEGER REFERENCES endpoints(id) ON DELETE SET NULL,
   targets TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'created' CHECK (status IN ('created', 'paused', 'running', 'error')),
   "limit" TEXT, -- JSON LimiterConfig
@@ -106,6 +126,7 @@ CREATE TABLE relay_rules (
 );
 CREATE INDEX idx_rules_tunnel ON relay_rules(tunnel_id);
 CREATE INDEX idx_rules_user ON relay_rules(user_id);
+CREATE INDEX idx_rules_endpoint ON relay_rules(endpoint_id);
 
 -- Materialized per-node config snapshot; agents poll this with a version number.
 CREATE TABLE node_configs (

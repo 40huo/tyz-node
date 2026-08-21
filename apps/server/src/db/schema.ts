@@ -87,6 +87,21 @@ export const chains = sqliteTable(
   (table) => [index("idx_chains_tunnel").on(table.tunnel_id, table.index), index("idx_chains_node").on(table.node_id)],
 );
 
+/**
+ * Named forwarding destination a relay rule can reference instead of a
+ * manually-entered address. Rules store their own `targets` copy (see below);
+ * editing an endpoint's host/port re-syncs referencing rules via the admin API.
+ */
+export const endpoints = sqliteTable("endpoints", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  host: text("host").notNull(),
+  port: integer("port").notNull(),
+  note: text("note"),
+  created_at: text("created_at").notNull().default(createdAt),
+  updated_at: text("updated_at").notNull().default(createdAt),
+});
+
 export const relayRules = sqliteTable(
   "relay_rules",
   {
@@ -97,6 +112,8 @@ export const relayRules = sqliteTable(
     tunnel_id: integer("tunnel_id").references(() => tunnels.id, { onDelete: "set null" }),
     /** Owning tenant; NULL = admin-managed rule (no quota enforcement). */
     user_id: integer("user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Stored target endpoint this rule forwards to; NULL = manually-entered targets. */
+    endpoint_id: integer("endpoint_id").references(() => endpoints.id, { onDelete: "set null" }),
     targets: text("targets").notNull(),
     status: text("status").$type<RelayRuleStatus>().notNull().default(RelayRuleStatus.CREATED),
     limit: text("limit", { mode: "json" }).$type<LimiterConfig>(),
@@ -110,7 +127,11 @@ export const relayRules = sqliteTable(
     created_at: text("created_at").notNull().default(createdAt),
     updated_at: text("updated_at").notNull().default(createdAt),
   },
-  (table) => [index("idx_rules_tunnel").on(table.tunnel_id), index("idx_rules_user").on(table.user_id)],
+  (table) => [
+    index("idx_rules_tunnel").on(table.tunnel_id),
+    index("idx_rules_user").on(table.user_id),
+    index("idx_rules_endpoint").on(table.endpoint_id),
+  ],
 );
 
 /** Materialized per-node config snapshot; agents poll this with a version number. */

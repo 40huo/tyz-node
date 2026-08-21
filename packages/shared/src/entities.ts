@@ -107,6 +107,13 @@ export interface RelayRule {
   /** Owning tenant; absent for admin-managed rules (no quota enforcement). */
   user_id?: number;
   targets: string; // Target address, e.g., "example.com:80"
+  /**
+   * Stored target endpoint this rule forwards to; absent = manually-entered
+   * `targets`. While associated, `targets` mirrors `endpointAddress(endpoint)`
+   * — the server re-syncs it (and recomputes affected tunnels) whenever the
+   * endpoint's host/port change.
+   */
+  endpoint_id?: number;
   status: RelayRuleStatus;
   /**
    * raw-mode tunnels: the rule's dedicated listening port on the EXIT node.
@@ -134,6 +141,26 @@ export interface RuleQuota {
   limit_bytes: number;
   starts_at: string; // subscription activation time, RFC3339
   expires_at?: string; // RFC3339; empty for permanent packages
+}
+
+/**
+ * Named forwarding destination (host + port) relay rules can reference instead
+ * of a manually-entered address. `rule.targets` keeps its own copy of the
+ * composed address so the agent config pipeline never joins this table.
+ */
+export interface Endpoint {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  note?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Compose the rule `targets` address; IPv6 hosts get bracketed (`[::1]:80`). */
+export function endpointAddress(host: string, port: number): string {
+  return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
 }
 
 /**

@@ -1,12 +1,23 @@
-import type { AdminRuleRow, Chain, Package, TunnelWithMeta, User, UserSubscription } from "@tyz/shared";
+import type {
+  AdminRuleRow,
+  Chain,
+  Endpoint,
+  EndpointWithMeta,
+  Package,
+  TunnelWithMeta,
+  User,
+  UserSubscription,
+} from "@tyz/shared";
 import {
   ChainType,
   createChainSchema,
+  createEndpointSchema,
   createNodeSchema,
   createPackageSchema,
   createRuleSchema,
   createTunnelSchema,
   createUserSchema,
+  endpointAddress,
   ForwardMode,
   loginSchema,
   type NodeWithMeta,
@@ -14,6 +25,7 @@ import {
   subscribeSchema,
   Transport,
   updateChainSchema,
+  updateEndpointSchema,
   updateNodeSchema,
   updatePackageSchema,
   updateRuleSchema,
@@ -26,6 +38,7 @@ import { createDb, type Database } from "../db";
 import { nodeEntityColumns, recomputeNodeConfig, toRelayNode, toRelayRule, toTunnel } from "../db/repo";
 import {
   chains,
+  endpoints,
   gostStats,
   nodeConfigs,
   packages,
@@ -716,6 +729,16 @@ adminRoutes.post("/rules", async (c) => {
     const problem = await validateRuleOwnership(createDb(c.env.DB), input.user_id, input.tunnel_id ?? null);
     if (problem) return c.json({ error: problem }, 400);
   }
+  // An associated endpoint is authoritative for `targets` — the composed
+  // address is resolved server-side so rules can never drift from the endpoint.
+  let targets = input.targets;
+  if (input.endpoint_id) {
+    const endpoint = await createDb(c.env.DB).select().from(endpoints).where(eq(endpoints.id, input.endpoint_id)).get();
+    if (!endpoint) {
+      return c.json({ error: `endpoint ${input.endpoint_id} not found` }, 400);
+    }
+    targets = endpointAddress(endpoint.host, endpoint.port);
+  }
   const ts = now();
   const [rule] = await createDb(c.env.DB)
     .insert(relayRules)
@@ -725,7 +748,8 @@ adminRoutes.post("/rules", async (c) => {
       listen_port: input.listen_port,
       tunnel_id: input.tunnel_id ?? null,
       user_id: input.user_id ?? null,
-      targets: input.targets,
+      endpoint_id: input.endpoint_id ?? null,
+      targets,
       status: input.status,
       exit_port: input.exit_port,
       limit: input.limit ?? null,
@@ -748,7 +772,7 @@ adminRoutes.put("/rules/:id", async (c) => {
   }
   const db = createDb(c.env.DB);
   const existing = await db
-    .select({ tunnel_id: relayRules.tunnel_id, user_id: relayRules.user_id })
+    .select({ tunnel_id: relayRules.tunnel_id, user_id: relayRules.user_id, endpoint_id: relayRules.endpoint_id })
     .from(relayRules)
     .where(eq(relayRules.id, id))
     .get();
@@ -764,13 +788,29 @@ adminRoutes.put("/rules/:id", async (c) => {
     if (problem) return c.json({ error: problem }, 400);
   }
 
+  // Association resolution: a set endpoint is authoritative for `targets`;
+  // input.endpoint_id === null disassociates back to a manual address.
+  const finalEndpointId = input.endpoint_id !== undefined ? input.endpoint_id : existing.endpoint_id;
+  let endpoint: typeof endpoints.$inferSelect | undefined;
+  if (finalEndpointId) {
+    endpoint = await db.select().from(endpoints).where(eq(endpoints.id, finalEndpointId)).get();
+    if (!endpoint) {
+      return c.json({ error: `endpoint ${finalEndpointId} not found` }, 400);
+    }
+  }
+
   const patch: Partial<typeof relayRules.$inferInsert> = {};
   if (input.name !== undefined) patch.name = input.name;
   if (input.description !== undefined) patch.description = input.description;
   if (input.listen_port !== undefined) patch.listen_port = input.listen_port;
   if (input.tunnel_id !== undefined) patch.tunnel_id = input.tunnel_id;
   if (input.user_id !== undefined) patch.user_id = input.user_id;
-  if (input.targets !== undefined) patch.targets = input.targets;
+  if (input.endpoint_id !== undefined) patch.endpoint_id = input.endpoint_id;
+  if (endpoint) {
+    patch.targets = endpointAddress(endpoint.host, endpoint.port);
+  } else if (input.targets !== undefined) {
+    patch.targets = input.targets;
+  }
   if (input.status !== undefined) patch.status = input.status;
   if (input.exit_port !== undefined) patch.exit_port = input.exit_port;
   if (input.limit !== undefined) patch.limit = input.limit;
@@ -838,6 +878,120 @@ adminRoutes.post("/rules/:id/restart", async (c) => {
   await broadcastNodeMessage(c.env, nodeIds, { type: "restart_service", service: `service-${id}` });
   await recordAudit(c.env, { action: "rule.restart", targetType: "rule", targetId: id, detail: rule.name });
   return c.json({ ok: true, nodes: nodeIds.length });
+});
+
+// ---- Target endpoints ----
+
+/**
+ * Named forwarding destinations rules can reference. `relay_rules.targets`
+ * keeps its own copy of the composed address (the config pipeline never joins
+ * endpoints); host/port edits re-sync referencing rules here, so the two can
+ * only drift through direct DB writes.
+ */
+function toEndpoint(row: typeof endpoints.$inferSelect): Endpoint {
+  return { ...row, note: row.note ?? undefined };
+}
+
+adminRoutes.get("/endpoints", async (c) => {
+  const db = createDb(c.env.DB);
+  const rows = await db
+    .select({
+      id: endpoints.id,
+      name: endpoints.name,
+      host: endpoints.host,
+      port: endpoints.port,
+      note: endpoints.note,
+      created_at: endpoints.created_at,
+      updated_at: endpoints.updated_at,
+      rule_count: count(relayRules.id),
+    })
+    .from(endpoints)
+    .leftJoin(relayRules, eq(relayRules.endpoint_id, endpoints.id))
+    .groupBy(endpoints.id)
+    .orderBy(endpoints.id);
+  const list: EndpointWithMeta[] = rows.map(({ note, ...row }) => ({ ...row, note: note ?? undefined }));
+  return c.json({ endpoints: list });
+});
+
+adminRoutes.post("/endpoints", async (c) => {
+  const parsed = createEndpointSchema.safeParse(await readJson(c));
+  if (!parsed.success) {
+    return c.json({ error: "invalid endpoint payload", detail: parsed.error.flatten() }, 400);
+  }
+  const input = parsed.data;
+  const ts = now();
+  const [row] = await createDb(c.env.DB)
+    .insert(endpoints)
+    .values({
+      name: input.name,
+      host: input.host,
+      port: input.port,
+      note: input.note ?? null,
+      created_at: ts,
+      updated_at: ts,
+    })
+    .returning();
+  await recordAudit(c.env, { action: "endpoint.create", targetType: "endpoint", targetId: row.id, detail: row.name });
+  return c.json({ endpoint: toEndpoint(row) }, 201);
+});
+
+adminRoutes.put("/endpoints/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const parsed = updateEndpointSchema.safeParse(await readJson(c));
+  if (!parsed.success) {
+    return c.json({ error: "invalid endpoint payload", detail: parsed.error.flatten() }, 400);
+  }
+  const input = parsed.data;
+  const db = createDb(c.env.DB);
+  const existing = await db.select().from(endpoints).where(eq(endpoints.id, id)).get();
+  if (!existing) {
+    return c.json({ error: "endpoint not found" }, 404);
+  }
+
+  const patch: Partial<typeof endpoints.$inferInsert> = {};
+  if (input.name !== undefined) patch.name = input.name;
+  if (input.host !== undefined) patch.host = input.host;
+  if (input.port !== undefined) patch.port = input.port;
+  if (input.note !== undefined) patch.note = input.note;
+  if (Object.keys(patch).length === 0) {
+    return c.json({ error: "no fields to update" }, 400);
+  }
+  patch.updated_at = now();
+  const [row] = await db.update(endpoints).set(patch).where(eq(endpoints.id, id)).returning();
+
+  // Address change: re-sync every referencing rule's targets, then recompute
+  // their tunnels (content-diffed — version bump + WS push only on real changes).
+  const hostChanged = input.host !== undefined && input.host !== existing.host;
+  const portChanged = input.port !== undefined && input.port !== existing.port;
+  if (hostChanged || portChanged) {
+    const address = endpointAddress(row.host, row.port);
+    const rules = await db
+      .update(relayRules)
+      .set({ targets: address, updated_at: now() })
+      .where(eq(relayRules.endpoint_id, id))
+      .returning({ tunnel_id: relayRules.tunnel_id });
+    const tunnelIds = new Set(rules.map((r) => r.tunnel_id).filter((t): t is number => t !== null));
+    for (const tunnelId of tunnelIds) {
+      await recomputeTunnelNodes(c.env, tunnelId);
+    }
+  }
+  await recordAudit(c.env, { action: "endpoint.update", targetType: "endpoint", targetId: id, detail: row.name });
+  return c.json({ endpoint: toEndpoint(row) });
+});
+
+adminRoutes.delete("/endpoints/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const db = createDb(c.env.DB);
+  const refs = await db.select({ id: relayRules.id }).from(relayRules).where(eq(relayRules.endpoint_id, id));
+  if (refs.length > 0) {
+    return c.json({ error: `endpoint is referenced by ${refs.length} rule(s)` }, 409);
+  }
+  const deleted = await db.delete(endpoints).where(eq(endpoints.id, id)).returning({ id: endpoints.id });
+  if (deleted.length === 0) {
+    return c.json({ error: "endpoint not found" }, 404);
+  }
+  await recordAudit(c.env, { action: "endpoint.delete", targetType: "endpoint", targetId: id });
+  return c.json({ ok: true });
 });
 
 // ---- Users (tenants) ----

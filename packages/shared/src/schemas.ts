@@ -123,6 +123,8 @@ export const relayRuleSchema = z.object({
   listen_port: z.number().int().positive(),
   tunnel_id: z.number().int().positive().optional(),
   user_id: z.number().int().positive().optional(),
+  /** Present when the rule targets a stored endpoint; the Go side ignores it (targets is authoritative). */
+  endpoint_id: z.number().int().positive().optional(),
   targets: z.string(),
   status: relayRuleStatusSchema,
   exit_port: z.number().int().min(0).max(65535).optional(),

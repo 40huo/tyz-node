@@ -13,6 +13,7 @@ import {
   IconServer,
   IconSettings,
   IconSun,
+  IconTargetArrow,
   IconUserCircle,
   IconUsers,
 } from "@tabler/icons-react";
@@ -22,6 +23,7 @@ import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 
 import { api, setUnauthorizedHandler } from "./api";
 import AuditPage from "./pages/Audit";
 import DashboardPage from "./pages/Dashboard";
+import EndpointsPage from "./pages/Endpoints";
 import LoginPage from "./pages/Login";
 import NodesPage from "./pages/Nodes";
 import NotFoundPage from "./pages/NotFound";
@@ -50,6 +52,7 @@ const BUSINESS_ITEMS: NavEntry[] = [
   { to: "/nodes", label: "节点", icon: <IconServer size={18} stroke={1.7} />, title: "节点管理" },
   { to: "/tunnels", label: "隧道", icon: <IconNetwork size={18} stroke={1.7} />, title: "隧道管理" },
   { to: "/rules", label: "转发规则", icon: <IconArrowsExchange size={18} stroke={1.7} /> },
+  { to: "/endpoints", label: "目标端点", icon: <IconTargetArrow size={18} stroke={1.7} />, title: "目标端点管理" },
   { to: "/users", label: "用户", icon: <IconUsers size={18} stroke={1.7} />, title: "用户管理" },
   { to: "/packages", label: "套餐", icon: <IconCreditCard size={18} stroke={1.7} />, title: "套餐管理" },
 ];
@@ -418,6 +421,7 @@ export default function App() {
         <Route path="nodes" element={<NodesPage />} />
         <Route path="tunnels" element={<TunnelsPage />} />
         <Route path="rules" element={<RulesPage />} />
+        <Route path="endpoints" element={<EndpointsPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="packages" element={<PackagesPage />} />
         <Route path="settings/tls" element={<SettingsPage kind="tls" />} />
