@@ -22,17 +22,18 @@ RUN mkdir -p /out && \
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata
 
-# Non-root user; /var/lib/tyz holds .env, the persisted auto-generated default
-# certificate ($HOME/.gost) and the last-config.json bootstrap cache — mount a
-# volume on it to keep tunnels alive across restarts.
-RUN addgroup -S tyz && adduser -S tyz -G tyz \
-    && mkdir -p /var/lib/tyz && chown tyz:tyz /var/lib/tyz
+# /var/lib/tyz holds .env, the persisted auto-generated default certificate
+# ($HOME/.gost) and the last-config.json bootstrap cache — mount a directory
+# or volume on it to keep tunnels alive across restarts. Runs as root: the
+# agent needs host networking anyway, and operator-created bind mounts (the
+# documented ./data layout) are root-owned, which would block a non-root
+# container from writing its state.
+RUN mkdir -p /var/lib/tyz
 WORKDIR /var/lib/tyz
 ENV HOME=/var/lib/tyz
 
 COPY --from=build /out/tyz-agent /usr/local/bin/tyz-agent
 
-USER tyz
 EXPOSE 18090
 
 # Exec form so SIGTERM reaches the agent directly

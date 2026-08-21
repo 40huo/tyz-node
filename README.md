@@ -85,7 +85,7 @@ CI：`deploy-server.yml`（手动触发或 v* tag，需 `CLOUDFLARE_API_TOKEN` /
 docker compose up -d   # 单容器 tyz-app（镜像 ghcr.io/laoshan-tech/tyz-node，host 网络，GOST 内嵌）
 ```
 
-节点机 `.env`（参考 `apps/agent/.env.example`）：`CONTROL_PLANE_URL`、`NODE_TOKEN` 必填。TLS 传输的自动证书持久化在容器卷 `tyz-data` 中，重启后证书保持不变。
+节点机 `.env`（参考 `apps/agent/.env.example`）：`CONTROL_PLANE_URL`、`NODE_TOKEN` 必填。TLS 传输的自动证书持久化在 `./data` 目录（容器内 `/var/lib/tyz`）中，重启后证书保持不变。
 
 ## 说明
 
