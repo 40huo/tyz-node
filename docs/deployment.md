@@ -11,7 +11,7 @@
 首次部署路线图：
 
 ```
-第 1 步  部署控制面                         三选一：Deploy 按钮（一键）/ Fork 后接入（自定义）/ 直连原仓库 + 2 个 secrets
+第 1 步  部署控制面                         两选一：Fork 后接入（推荐）/ 直连原仓库 + 2 个 secrets
 第 2 步  管理面板初始化                     节点 / 隧道 / 规则 / 用户 / 套餐
 第 3 步  节点机部署 agent                   docker compose up -d（每台节点机）
 ```
@@ -82,19 +82,16 @@
 
 ## 3. 控制面部署
 
-### 3.1 一键部署（Deploy to Cloudflare 按钮）
+### 3.1 部署通道选择
 
-面向任何想自部署本项目的用户（包括仓库维护者自己）：点击 README 中的 **Deploy to Cloudflare** 按钮（或在浏览器打开 `https://deploy.workers.cloudflare.com/?url=https://github.com/laoshan-tech/tyz-node/tree/master/apps/server`）：
+| 通道 | 适合 | 见 |
+|---|---|---|
+| **Fork 后接入 Workers Builds**（推荐） | 个人部署者：保留完整 monorepo 副本，可改代码、可 Sync fork 跟进上游更新 | 3.2 |
+| **直连原仓库接入 Workers Builds** | 不改代码的自部署 / 维护者自用生产 | 3.3 |
 
-1. Cloudflare 会把公共仓库**克隆到你的 GitHub 账户**下（之后你在自己的副本上继续开发）；
-2. 设置页可自定义仓库名、Worker 名、D1 数据库名等资源名；
-3. 构建与部署命令从 `apps/server/package.json` 的 `build` / `deploy` 脚本**自动预填**（monorepo 的前端构建和 D1 迁移已包含在内），保持默认即可；
-4. 部署过程中 Cloudflare 会**按 wrangler 配置自动创建所需资源**（D1 数据库、Durable Object），并把生成的资源 ID 回写到**你自己的仓库副本**——公共仓库里没有任何账户相关 ID；
-5. 按提示填写 secrets（见 3.4）：管理员用户名 + 密码即可。
+> **为什么不提供 Deploy to Cloudflare 按钮**：实测按钮流程会把仓库克隆成一个**独立的新仓库（不是 GitHub fork）**，后续无法用 Sync fork 跟进上游；且按钮 URL 指向子目录（monorepo 的 Worker 在 `apps/server`）时，克隆出的仓库**只包含该子目录**——`packages/shared` 等 workspace 依赖与前端源码全部丢失，`bun install` 直接报 `Workspace dependency "@tyz/shared" not found`。对 monorepo 不可用，故本项目以 Fork 路径为主。
 
-部署完成后进入第 4 节初始化面板。按钮路径同样会得到一个自己账户下的仓库副本；想先 Fork 并自己改好配置再部署的，走 3.2。
-
-### 3.2 Fork 后部署（推荐给想自定义的个人部署者）
+### 3.2 Fork 后部署（推荐给个人部署者）
 
 适合想长期运行自己的副本、改代码或跟随上游更新的部署者：**Fork → 按需改配置 → Dashboard 连自己的 fork**。
 
@@ -121,6 +118,8 @@ bunx wrangler d1 migrations apply DB --remote
 ```
 
 **⑥ 跟进上游更新**：GitHub fork 页面点 **Sync fork**（或 `git pull upstream master && git push`）→ push 自动触发重新部署；若上游发布包含新的 `migrations/*.sql`，按 3.7 在本地补跑一次迁移。
+
+部署完成后进入第 4 节初始化面板。
 
 > 建议：在 fork 的 **Settings → Actions** 中禁用 `deploy-server.yml`（fork 里没有 `CLOUDFLARE_*` secrets，跑了也会失败，还可能与 Workers Builds 形成双部署通道）。
 
@@ -181,7 +180,7 @@ git push origin master
 
 在 Worker → **Deployments / Builds** 页面观察构建日志。首次部署时 wrangler 会自动创建 D1 数据库 `tyz`（见 3.7）。
 
-**手动接入路径还需执行一次数据库迁移**（默认 Deploy command 只部署不迁移；若用了 `npm run deploy` 或 Deploy 按钮路径则已包含，跳过）：
+**默认 Deploy command 只部署不迁移**，首次部署完成后需本地执行一次（若 Deploy command 用了 `npm run deploy` 则已包含，跳过）：
 
 ```bash
 bunx wrangler login     # 首次需 OAuth 授权
@@ -200,16 +199,15 @@ curl https://tyz.example.com/api/healthz        # → {"ok":true}
 
 **自动供给（无需关心 database_id）**：`wrangler.jsonc` 的 D1 绑定故意不写 `database_id`（依赖 wrangler ≥ 4.45 的自动资源供给）。首次 `wrangler deploy` 会在账户上创建 `database_name` 声明的数据库（默认 `tyz`，已存在同名则直接按名称关联），此后每次部署都按名称维持绑定——**仓库里永远不出现账户相关的 ID**，公共仓库与多人部署互不干扰。本地 `wrangler dev` 也会自动创建本地库。
 
-**迁移策略（按部署通道二选一）**：
+**迁移策略（二选一）**：
 
-- **Deploy 按钮路径**：`apps/server/package.json` 的 `deploy` 脚本（`wrangler deploy && npm run db:migrate`）已包含迁移，全自动。顺序是**先部署后迁移**：首次部署时数据库由部署动作创建，迁移必须在它之后才能执行；日常发布保持迁移增量向后兼容（加表/加列），部署与迁移之间几秒的窗口不影响在线版本。
-- **手动接入路径（默认 Deploy command 不含迁移）**：发布包含新的 `migrations/*.sql` 时，在本地执行一次：
+- **默认（Deploy command 为默认的 `npx wrangler deploy`，不含迁移）**：发布包含新的 `migrations/*.sql` 时，在本地执行一次：
 
   ```bash
   bunx wrangler d1 migrations apply DB --remote
   ```
 
-  不默认自动化的原因：Workers Builds 自动创建的 API token 默认**不含 D1 编辑权限**，部署命令里跑迁移会报 403。想全自动：到 **My Profile → API Tokens** 给该 token 追加 **D1:Edit**，再把 Deploy command 改为 `npm run deploy`。
+- **全自动**：把 Deploy command 改为 `npm run deploy`（即 `apps/server/package.json` 里的 `wrangler deploy && npm run db:migrate`）。顺序是**先部署后迁移**：首次部署时数据库由部署动作创建，迁移必须在它之后才能执行；日常发布保持迁移增量向后兼容（加表/加列），部署与迁移之间几秒的窗口不影响在线版本。前提：到 **My Profile → API Tokens** 给 Workers Builds 所用的 token 追加 **D1:Edit**（自动创建的 token 默认不含 D1 编辑权限，不加会报 403）。
 
 ### 3.8 与仓库自带 GitHub Actions 的关系
 
