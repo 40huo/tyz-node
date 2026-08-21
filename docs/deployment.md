@@ -316,7 +316,7 @@ git push origin master
 在节点机上创建部署目录并写入 `.env`（完整变量表见附录 A；真实环境变量优先于 `.env`）：
 
 ```bash
-mkdir -p /opt/tyz && cd /opt/tyz
+mkdir -p /opt/tyz/data && cd /opt/tyz
 cat > .env <<'EOF'
 CONTROL_PLANE_URL=https://tyz.example.com
 NODE_TOKEN=<面板创建该节点时显示的 token>
@@ -324,7 +324,7 @@ EOF
 chmod 600 .env
 ```
 
-写入 `docker-compose.yml`：
+写入 `docker-compose.yml`（镜像以 root 运行 + `./data` 宿主机绑定挂载，文件直接可见、无卷属主问题）：
 
 ```yaml
 services:
@@ -337,10 +337,7 @@ services:
       - ./.env:/var/lib/tyz/.env:ro
       # 持久化：离线自举缓存 last-config.json、配额计数器 quota-store.json、
       # 链路 TLS 证书 certs/、自动生成的默认证书 $HOME/.gost
-      - tyz-data:/var/lib/tyz
-
-volumes:
-  tyz-data:
+      - ./data:/var/lib/tyz
 ```
 
 启动：
@@ -537,6 +534,7 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql   # 仓库�
 | 症状 | 原因 | 处置 |
 |---|---|---|
 | 容器启动即退出，日志有 `fatal:` | `CONTROL_PLANE_URL`/`NODE_TOKEN` 缺失，或某个 `*_MS` 变量非正整数 | 修正 `.env` 后 `docker compose up -d` |
+| 日志 warn `mkdir .../.gost: permission denied` | 旧版镜像以非 root 用户运行，而挂载目录归 root | compose 的 app 服务加一行 `user: "0:0"` 后重建容器；或拉取以 root 运行的新镜像 |
 | 面板显示节点不在线 | token 错误 / 出站 443 不通 / 控制面域名不可达 | 节点机 `curl https://tyz.example.com/api/healthz`；核对 token；确认域名解析 |
 | 服务健康显示 `apply_failed` | 端口冲突（自动分配撞号或与宿主服务冲突） | 给该链路/规则显式指定端口；或调整节点 `ports` 区间消除重叠 |
 | 改了配置但节点没生效 | WS 断连窗口内推送丢失 | agent 重连时立即补拉；5 分钟安全网轮询兜底。仍不行用节点页「重算」 |
