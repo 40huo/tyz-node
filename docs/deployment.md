@@ -105,9 +105,18 @@
 | D1 数据库名 | `apps/server/wrangler.jsonc` 的 `database_name`（默认 `tyz`） | 首次部署自动创建同名数据库；不需要填任何资源 ID |
 | 面板标题等 | `apps/web/` 源码 | 改完随下次部署自动生效 |
 
-**③ 接入 Workers Builds**：**Workers & Pages → Create → Worker → 连接 Git 仓库**，选择**你 fork 的仓库**与 `master` 分支，构建设置按 3.3 的表格配置。
+**③ 接入 Workers Builds**：**Workers & Pages → Create → Worker → 连接 Git 仓库**，选择**你 fork 的仓库**与 `master` 分支，Worker 名保持 `tyz-server`（与 `wrangler.jsonc` 的 `name` 一致），并按下表填写构建设置：
 
-**④ 填 secrets**（见 3.4）：`ADMIN_USERNAME` + `ADMIN_PASSWORD` 两个即可。
+| 设置 | 值 |
+|---|---|
+| Root directory | `apps/server` |
+| Build command | `cd ../.. && bun install && bun run --filter @tyz/web build` |
+| Deploy command | 默认（`npx wrangler deploy`）即可 |
+| Build 变量 | `SKIP_DEPENDENCY_INSTALL=1` |
+
+> 构建命令**不会被自动预填**（自动预填是 Deploy 按钮流程专属；手动连接只做框架探测，而 `apps/server` 是纯后端目录探测不到），按上表手动填一次即可，详细说明见 3.3。
+
+**④ 填 secrets**（见 3.4）：`ADMIN_USERNAME` + `ADMIN_PASSWORD` 两个即可。**首次部署前没配也不影响部署**——部署完成后随时在 Settings → Variables and Secrets 里补配，保存即生效（无需重新构建），之后就能登录。
 
 **⑤ 触发部署**：连接保存后即触发首次构建部署。默认 Deploy command 不含迁移，首次部署完成后本地执行一次：
 
@@ -149,7 +158,7 @@ Workers Builds 的行为：push 到生产分支 → 跑**构建命令**（可选
 
 ### 3.4 配置 secrets（必填仅 2 个）
 
-Worker → **Settings → Variables and Secrets → Add**，类型选 **Secret**（或本地 `bunx wrangler secret put <NAME>`，效果相同）：
+Worker → **Settings → Variables and Secrets → Add**，类型选 **Secret**（或本地 `bunx wrangler secret put <NAME>`，效果相同）。**随时可配**——首次部署前没配也能正常部署，事后补配保存即生效，无需重新构建：
 
 | Secret | 必填 | 值 |
 |---|---|---|
@@ -527,6 +536,7 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql
 | 构建时 npm 安装报 `workspace:*` 相关错误 | 没设 `SKIP_DEPENDENCY_INSTALL=1`，自动安装跑在了子目录 | 加该构建变量；确认 Build command 里自己 `bun install` |
 | 部署命令里跑迁移报 403/权限错误 | Workers Builds 的 token 无 D1:Edit | 见 3.7：本地跑迁移，或给 token 补 D1:Edit |
 | push 了但没触发构建 | 配置了 build watch paths 且路径不含改动文件 | 删掉 watch paths 配置（见 3.3） |
+| 连接仓库时构建/部署命令没有自动填 | 预期行为：自动预填是 Deploy 按钮流程专属，手动连接只做框架探测（`apps/server` 探测不到） | 按 3.2/3.3 的表格手动填写四项设置 |
 
 ### agent / 节点机
 
@@ -544,7 +554,7 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql
 
 | 症状 | 原因 | 处置 |
 |---|---|---|
-| 无法登录面板 | `ADMIN_PASSWORD` 未设置或输错（旧式部署则是哈希与 `TOKEN_SALT` 不配对） | 核对 secrets；新部署直接设 `ADMIN_PASSWORD` 明文 |
+| 无法登录面板 | `ADMIN_PASSWORD` 未设置或输错（旧式部署则是哈希与 `TOKEN_SALT` 不配对） | Settings → Variables and Secrets 添加/核对 `ADMIN_USERNAME`、`ADMIN_PASSWORD`（类型 Secret，保存即生效无需重新构建）；新部署直接设 `ADMIN_PASSWORD` 明文 |
 | 能登录但面板数据报错（表不存在） | 首次部署后迁移未执行 | 按 3.6 执行 `d1 migrations apply DB --remote` |
 | 登录态频繁丢失 | 更改了 `SESSION_SECRET`（使所有会话失效，一次性） | 重新登录即可 |
 | 统计/用量不更新 | agent 掉线或统计缓冲未到 flush 间隔 | 看节点在线状态；默认 60s 批量上报，稍等 |
