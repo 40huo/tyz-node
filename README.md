@@ -40,9 +40,7 @@ bun install
 
 # 1. 控制面（端口 8787）
 cd apps/server
-cp .dev.vars.example .dev.vars
-# 编辑 .dev.vars：ADMIN_PASSWORD_SHA256 用下面命令生成（TOKEN_SALT 需与 .dev.vars 中一致）
-bun run scripts/hash-password.ts <TOKEN_SALT> <密码>
+cp .dev.vars.example .dev.vars        # 默认 admin/admin123 即可登录本地面板
 bunx wrangler d1 migrations apply DB --local
 bunx wrangler d1 execute DB --local --file scripts/seed-local.sql   # 可选：本地样例数据
 bun run dev        # wrangler dev
@@ -66,18 +64,21 @@ apps/agent/scripts/e2e-local.sh
 
 ## 部署
 
+> 完整生产部署指南（Deploy 按钮、Workers Builds、面板初始化、节点机部署、运维与排障）见 **[docs/deployment.md](docs/deployment.md)**。以下为最小 runbook。
+
 ### 控制面（Cloudflare）
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/laoshan-tech/tyz-node/tree/master/apps/server)
+
+一键部署：点上面的按钮（自动克隆仓库到你的账户、创建 D1 等资源、预填构建/部署命令），按提示填 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 两个 secret 即可。想自己维护副本或改代码：**Fork 本仓库**后在 Cloudflare Dashboard 连接你的 fork 部署（步骤见[部署指南 §3.2](docs/deployment.md)）。CLI 手动部署：
 
 ```bash
 cd apps/server
-bunx wrangler d1 create tyz          # 把返回的 database_id 填入 wrangler.jsonc
-bunx wrangler d1 migrations apply DB --remote
 bunx wrangler secret put ADMIN_USERNAME
-bunx wrangler secret put ADMIN_PASSWORD_SHA256   # bun run scripts/hash-password.ts <TOKEN_SALT> <密码>
-bunx wrangler secret put SESSION_SECRET          # 随机串
-bunx wrangler secret put TOKEN_SALT              # 随机串，决定节点 token 哈希，部署后勿改
-bun run --filter @tyz/web build     # Worker Assets 托管 ../web/dist
-bunx wrangler deploy
+bunx wrangler secret put ADMIN_PASSWORD
+bun run --filter @tyz/web build             # Worker Assets 托管 ../web/dist
+bunx wrangler deploy                        # 首次部署自动创建 D1（自动资源供给，无需 database_id）
+bunx wrangler d1 migrations apply DB --remote
 ```
 
 CI：`deploy-server.yml`（手动触发或 v* tag，需 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` secrets）；`check.yml`（lint + 类型检查 + agent Go vet/test + 前端构建）。

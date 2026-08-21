@@ -6,12 +6,19 @@ export interface Bindings {
   CONFIG_PUSH: DurableObjectNamespace;
   /** Admin login username (secret). */
   ADMIN_USERNAME: string;
-  /** sha256(TOKEN_SALT + "admin:" + password), hex. Generate with scripts/hash-password.ts. */
-  ADMIN_PASSWORD_SHA256: string;
-  /** HMAC key for admin session cookies (secret). */
-  SESSION_SECRET: string;
-  /** Salt mixed into node token hashes and the admin password hash (secret). */
-  TOKEN_SALT: string;
+  /** Admin login password, plaintext (secret). Preferred over ADMIN_PASSWORD_SHA256. */
+  ADMIN_PASSWORD?: string;
+  /** Legacy login: sha256(TOKEN_SALT + ":admin:" + password), hex. Only used when ADMIN_PASSWORD is unset. */
+  ADMIN_PASSWORD_SHA256?: string;
+  /** HMAC key for admin session cookies (secret). Optional — derived from the admin credential when unset. */
+  SESSION_SECRET?: string;
+  /**
+   * Optional salt mixed into node token hashes (`sha256(salt:node:token)`); unset means
+   * unsalted `sha256(node:token)`. Node tokens are high-entropy random strings, so an
+   * unsalted hash is sufficient. Never change or unset this once nodes exist — it
+   * invalidates every stored token hash.
+   */
+  TOKEN_SALT?: string;
 }
 
 export type Variables = {
