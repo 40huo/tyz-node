@@ -1,5 +1,5 @@
 import { Button, Table, Tooltip, toast } from "@heroui/react";
-import { IconEraser, IconPencil, IconPlayerPlay, IconPlus, IconTrash } from "@tabler/icons-react";
+import { IconEraser, IconPencil, IconPlayerPlay, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type AdminRuleRow,
@@ -392,6 +392,7 @@ export default function RulesPage() {
           value={filter}
           onChange={setFilter}
         />
+        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => rulesQuery.refetch()} />
         <SearchInput value={search} onChange={setSearch} placeholder="搜索规则 / 端口 / 目标" />
       </ListToolbar>
       {rulesQuery.isError ? (

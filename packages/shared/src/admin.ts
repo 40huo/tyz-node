@@ -72,7 +72,7 @@ export const createNodeSchema = z.object({
     .regex(/^\d+-\d+$/, "ports must look like '10000-20000'")
     .default("10000-20000"),
   traffic_limit: z.number().int().nonnegative().default(0),
-  rate: z.number().min(0.1, "计费倍率范围 0.1-100").max(100, "计费倍率范围 0.1-100").default(1),
+  rate: z.number().min(0, "计费倍率范围 0-100").max(100, "计费倍率范围 0-100").default(1),
   custom_cfg: z.unknown().optional(),
   tls_config: tlsConfigInputSchema.optional(),
 });

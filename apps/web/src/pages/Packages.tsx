@@ -1,5 +1,5 @@
 import { Button, Table } from "@heroui/react";
-import { IconPencil, IconPlus, IconTrash } from "@tabler/icons-react";
+import { IconPencil, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CreatePackageInput, Package, RelayNode, Tunnel } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
@@ -214,6 +214,7 @@ export default function PackagesPage() {
         }
       />
       <ListToolbar>
+        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => packagesQuery.refetch()} />
         <SearchInput value={search} onChange={setSearch} placeholder="搜索套餐" />
       </ListToolbar>
       {packagesQuery.isError ? (

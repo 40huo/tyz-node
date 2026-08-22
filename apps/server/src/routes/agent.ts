@@ -1,12 +1,12 @@
-import { agentStatsBatchSchema } from "@tyz/shared";
-import { and, eq, notInArray, sql } from "drizzle-orm";
+import { agentStatsBatchSchema, RelayRuleStatus } from "@tyz/shared";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { createDb } from "../db";
 import { getNodeConfigSnapshot, recomputeNodeConfig } from "../db/repo";
-import { gostStats, serviceHealth } from "../db/schema";
+import { gostStats, relayRules, serviceHealth } from "../db/schema";
 import type { Bindings, Variables } from "../env";
 import { nodeAuth } from "../middleware/nodeAuth";
-import { ingestTraffic } from "../services/traffic";
+import { ingestTraffic, nodeRuleTunnels } from "../services/traffic";
 
 export const agentRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -61,6 +61,20 @@ agentRoutes.get("/ws", (c) => {
   return stub.fetch(c.req.raw);
 });
 
+/**
+ * D1 caps bound parameters per statement (100). The observer reports per
+ * (service × client), so one flush can easily carry dozens of samples — a
+ * single multi-row insert then exceeds the cap and throws, which (pre-fix)
+ * permanently wedged the agent's whole-buffer retry. Chunk every batched
+ * write back to a fixed row count per statement: stats rows bind 4 params,
+ * health rows 5, so 20/16 rows stay under 100.
+ */
+function chunk<T>(rows: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size));
+  return out;
+}
+
 /** Batched stats upload from agents (samples and/or service health snapshot). */
 agentRoutes.post("/stats", async (c) => {
   const parsed = agentStatsBatchSchema.safeParse(await c.req.json().catch(() => null));
@@ -72,18 +86,24 @@ agentRoutes.post("/stats", async (c) => {
   const reportedAt = new Date().toISOString();
   const db = createDb(c.env.DB);
 
+  // Per-rule service authorization (see nodeRuleTunnels), shared by the billing
+  // gate (ingestTraffic) and the status-write gate below — computed once per
+  // report; two indexed lookups (node chains + raw-mode out tunnels).
+  const ruleTunnels = await nodeRuleTunnels(db, nodeId);
+
   if (parsed.data.samples.length > 0) {
-    await db.insert(gostStats).values(
-      parsed.data.samples.map((sample) => ({
-        node_id: nodeId,
-        service: sample.service,
-        stats: sample,
-        reported_at: reportedAt,
-      })),
-    );
+    const sampleRows = parsed.data.samples.map((sample) => ({
+      node_id: nodeId,
+      service: sample.service,
+      stats: sample,
+      reported_at: reportedAt,
+    }));
+    for (const part of chunk(sampleRows, 20)) {
+      await db.insert(gostStats).values(part);
+    }
     // Fold the samples into the hourly ledger (billing source of truth).
     // Best effort: a failed ingest must not fail the stats upload.
-    await ingestTraffic(db, nodeId, parsed.data.samples).catch((err) =>
+    await ingestTraffic(db, nodeId, parsed.data.samples, ruleTunnels).catch((err) =>
       console.error("traffic ledger ingest failed", err),
     );
   }
@@ -91,34 +111,93 @@ agentRoutes.post("/stats", async (c) => {
   // The health array is a full snapshot of the node's services: upsert every
   // entry and drop rows for services no longer present (config removals).
   if (parsed.data.health.length > 0) {
-    await db
-      .insert(serviceHealth)
-      .values(
-        parsed.data.health.map((h) => ({
-          node_id: nodeId,
-          service: h.service,
-          state: h.state,
-          error: h.error ?? null,
-          reported_at: reportedAt,
-        })),
-      )
-      .onConflictDoUpdate({
-        target: [serviceHealth.node_id, serviceHealth.service],
-        set: {
-          state: sql`excluded.state`,
-          error: sql`excluded.error`,
-          reported_at: sql`excluded.reported_at`,
-        },
-      });
-    await db.delete(serviceHealth).where(
-      and(
-        eq(serviceHealth.node_id, nodeId),
-        notInArray(
-          serviceHealth.service,
-          parsed.data.health.map((h) => h.service),
-        ),
-      ),
-    );
+    const healthRows = parsed.data.health.map((h) => ({
+      node_id: nodeId,
+      service: h.service,
+      state: h.state,
+      error: h.error ?? null,
+      reported_at: reportedAt,
+    }));
+    for (const part of chunk(healthRows, 16)) {
+      await db
+        .insert(serviceHealth)
+        .values(part)
+        .onConflictDoUpdate({
+          target: [serviceHealth.node_id, serviceHealth.service],
+          set: {
+            state: sql`excluded.state`,
+            error: sql`excluded.error`,
+            reported_at: sql`excluded.reported_at`,
+          },
+        });
+    }
+    // Drop rows for services no longer present (config removals). NOT IN must
+    // NOT be chunked — each chunk's statement would delete the other chunks'
+    // freshly upserted rows (>90 services wiped the whole node's health). Diff
+    // the reported snapshot against the stored set and delete the complement
+    // via chunked IN lists instead (IN chunks are union semantics).
+    const reported = new Set(healthRows.map((h) => h.service));
+    const existing = await db
+      .select({ service: serviceHealth.service })
+      .from(serviceHealth)
+      .where(eq(serviceHealth.node_id, nodeId));
+    const stale = existing.map((row) => row.service).filter((service) => !reported.has(service));
+    for (const part of chunk(stale, 90)) {
+      await db
+        .delete(serviceHealth)
+        .where(and(eq(serviceHealth.node_id, nodeId), inArray(serviceHealth.service, part)));
+    }
+
+    // Derive rule runtime status from the entry-service snapshot: status is a
+    // display label (deployment follows config, not status), so only positive
+    // evidence writes back — healthy entry service → running, failed/apply_failed
+    // → error. `paused` is the operator's manual state and is never overwritten;
+    // rules whose service is absent from the snapshot (fresh, or dropped by the
+    // quota hard-stop) keep their current status. The service string is
+    // attacker-controlled, so a status write additionally requires the node to
+    // participate in the rule's tunnel (see the same gate in ingestTraffic).
+    const ruleStatus = new Map<number, RelayRuleStatus>();
+    for (const h of parsed.data.health) {
+      const match = /^service-(\d+)$/.exec(h.service);
+      if (match === null) continue; // service-t{id} exit relays are shared across a tunnel's rules
+      if (h.state === "ready" || h.state === "running") ruleStatus.set(Number(match[1]), RelayRuleStatus.RUNNING);
+      else if (h.state === "failed" || h.state === "apply_failed") {
+        ruleStatus.set(Number(match[1]), RelayRuleStatus.ERROR);
+      }
+    }
+    if (ruleStatus.size > 0) {
+      // One chunked SELECT doubles as authorization (rule's tunnel ∈ the node's
+      // per-rule tunnels) and change detection (steady state = zero UPDATE
+      // statements per flush). Chunking is not optional: >100 distinct rule
+      // services in a snapshot would exceed D1's bound-parameter cap and 500
+      // the whole upload — re-wedging the agent's retry loop (TYZ-004 class).
+      const ids = [...ruleStatus.keys()];
+      const current = new Map<number, RelayRuleStatus>();
+      for (let i = 0; i < ids.length; i += 90) {
+        const rows = await db
+          .select({ id: relayRules.id, tunnel_id: relayRules.tunnel_id, status: relayRules.status })
+          .from(relayRules)
+          .where(inArray(relayRules.id, ids.slice(i, i + 90)));
+        for (const r of rows) {
+          if (r.tunnel_id !== null && ruleTunnels.has(r.tunnel_id)) current.set(r.id, r.status);
+        }
+      }
+      for (const [ruleId, status] of ruleStatus) {
+        const cur = current.get(ruleId);
+        // undefined = not the node's rule (authorization failed); equal = no change.
+        if (cur === undefined || cur === status) continue;
+        await db
+          .update(relayRules)
+          .set({ status, updated_at: reportedAt })
+          .where(
+            and(
+              eq(relayRules.id, ruleId),
+              ne(relayRules.status, RelayRuleStatus.PAUSED),
+              ne(relayRules.status, status),
+            ),
+          );
+      }
+    }
   }
 
   return c.json({ ok: true, inserted: parsed.data.samples.length });

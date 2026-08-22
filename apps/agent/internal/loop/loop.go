@@ -136,13 +136,33 @@ func (l *Loop) Wake() {
 	}
 }
 
-// Enqueue buffers one stats sample from the GOST observer (drop-oldest at cap).
+// Enqueue buffers one stats sample from the GOST observer. Consecutive
+// snapshots of the same (service, client) carry monotonic cumulative counters,
+// and the server folds a batch into chained deltas — the newest snapshot
+// supersedes the older one exactly (telescoping sum), so it replaces the
+// buffered entry in place, keeping the intra-window CurrentConns peak for the
+// hourly connection rollup. The buffer then holds at most one entry per active
+// (service, client) between flushes, which keeps uploads within a single
+// chunked request; drop-oldest at cap still applies to new keys.
 func (l *Loop) Enqueue(sample model.GostStatsSample) {
 	l.statsMu.Lock()
-	if len(l.stats) >= maxBufferedStats {
-		l.stats = l.stats[1:]
+	replaced := false
+	for i := len(l.stats) - 1; i >= 0; i-- {
+		if l.stats[i].Service == sample.Service && l.stats[i].Client == sample.Client {
+			if sample.CurrentConns < l.stats[i].CurrentConns {
+				sample.CurrentConns = l.stats[i].CurrentConns
+			}
+			l.stats[i] = sample
+			replaced = true
+			break
+		}
 	}
-	l.stats = append(l.stats, sample)
+	if !replaced {
+		if len(l.stats) >= maxBufferedStats {
+			l.stats = l.stats[1:]
+		}
+		l.stats = append(l.stats, sample)
+	}
 	buffered := len(l.stats)
 	l.statsMu.Unlock()
 	l.log.Debug("Stats buffered", "service", sample.Service, "buffered", buffered)
@@ -227,6 +247,12 @@ func (l *Loop) pollOnce(ctx context.Context) error {
 	return nil
 }
 
+// statsUploadChunk bounds one POST so the server-side insert stays within D1's
+// bound-parameter cap (it chunks inserts per statement; see routes/agent.ts).
+// Sending the whole buffer as one request would 500 on large batches and —
+// worse — the resulting whole-buffer retry could never succeed.
+const statsUploadChunk = 20
+
 func (l *Loop) flushStats(ctx context.Context) error {
 	l.statsMu.Lock()
 	samples := l.stats
@@ -246,19 +272,46 @@ func (l *Loop) flushStats(ctx context.Context) error {
 	l.flushMu.Lock()
 	defer l.flushMu.Unlock()
 
-	if err := l.client.UploadStats(ctx, samples, health); err != nil {
-		return err
+	// Chunks are sent sequentially; the health snapshot rides the first one.
+	// On failure the already-sent prefix is still trimmed from the buffer, so
+	// the retry resumes from where it stopped instead of re-uploading (or
+	// forever wedging on) the oversized batch.
+	sent := 0
+	healthSent := false
+	var uploadErr error
+	if len(samples) == 0 {
+		uploadErr = l.client.UploadStats(ctx, nil, health)
+		healthSent = uploadErr == nil
+	} else {
+		for start := 0; start < len(samples) && uploadErr == nil; start += statsUploadChunk {
+			end := min(start+statsUploadChunk, len(samples))
+			var h []model.ServiceHealthSample
+			if start == 0 {
+				h = health
+			}
+			if uploadErr = l.client.UploadStats(ctx, samples[start:end], h); uploadErr == nil {
+				sent = end
+				healthSent = start == 0
+			}
+		}
 	}
 
-	// Keep only samples queued while this request was in flight.
-	l.statsMu.Lock()
-	if n := len(samples); len(l.stats) >= n {
-		l.stats = l.stats[n:]
-	} else {
-		l.stats = nil
+	if sent > 0 {
+		// Keep only samples queued while the requests were in flight.
+		l.statsMu.Lock()
+		if len(l.stats) >= sent {
+			l.stats = l.stats[sent:]
+		} else {
+			l.stats = nil
+		}
+		l.statsMu.Unlock()
 	}
-	l.statsMu.Unlock()
-	l.noteHealth(health)
+	if healthSent {
+		l.noteHealth(health)
+	}
+	if uploadErr != nil {
+		return uploadErr
+	}
 	l.log.Debug("Stats uploaded", "count", len(samples), "health", len(health))
 	return nil
 }

@@ -1,7 +1,49 @@
-import type { GostStatsSample } from "@tyz/shared";
+import { ChainType, ForwardMode, type GostStatsSample } from "@tyz/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "../db";
-import { relayNodes, relayRules, serviceMetricsHourly, trafficCounters, trafficHourly } from "../db/schema";
+import {
+  chains,
+  relayNodes,
+  relayRules,
+  serviceMetricsHourly,
+  trafficCounters,
+  trafficHourly,
+  tunnels,
+} from "../db/schema";
+
+/**
+ * Tunnels on which the node deploys per-rule services (service-{ruleId}):
+ * every IN-chain node (entries, both modes) and OUT-chain nodes of RAW tunnels
+ * (raw exits deploy one service per rule). Multi-leg usage is INTENTIONALLY the
+ * sum over every node serving the rule — the operator trims legs via each
+ * node's rate (0 = record but don't bill). Relay-mode exits deploy only the
+ * shared service-t{tunnelId} (their observer data carries no per-rule split),
+ * so a service-{ruleId} sample from them is a forged name and is rejected.
+ * Used as the billing/status authorization set.
+ */
+export async function nodeRuleTunnels(db: Database, nodeId: number): Promise<Set<number>> {
+  const nodeChains = await db
+    .select({ tunnel_id: chains.tunnel_id, chain_type: chains.chain_type })
+    .from(chains)
+    .where(eq(chains.node_id, nodeId));
+  const ruleTunnels = new Set<number>();
+  const outTunnels: number[] = [];
+  for (const c of nodeChains) {
+    if (c.chain_type === ChainType.IN) ruleTunnels.add(c.tunnel_id);
+    else if (c.chain_type === ChainType.OUT) outTunnels.push(c.tunnel_id);
+  }
+  if (outTunnels.length > 0) {
+    // Stored mode only: the admin API rejects raw on non-1/2-hop shapes, so a
+    // hand-edited invalid raw tunnel degrades to relay at aggregation and its
+    // exit's per-rule reports are (harmlessly) over-permitted here.
+    const rows = await db
+      .select({ id: tunnels.id })
+      .from(tunnels)
+      .where(and(inArray(tunnels.id, outTunnels), eq(tunnels.forward_mode, ForwardMode.RAW)));
+    for (const r of rows) ruleTunnels.add(r.id);
+  }
+  return ruleTunnels;
+}
 
 /**
  * Hourly traffic ledger ingest.
@@ -42,7 +84,13 @@ interface HourBucket {
  * every node serving the rule: raw-mode exits report under the same
  * service-{ruleId} name as the entry.
  */
-export async function ingestTraffic(db: Database, nodeId: number, samples: GostStatsSample[]): Promise<void> {
+export async function ingestTraffic(
+  db: Database,
+  nodeId: number,
+  samples: GostStatsSample[],
+  /** Pre-fetched per-rule tunnels (nodeRuleTunnels) — the stats route shares one lookup with its status gate. */
+  nodeTunnels?: Set<number>,
+): Promise<void> {
   const serviceSamples = samples.filter((s) => !s.client);
   await rollupServiceMetrics(db, nodeId, serviceSamples);
   if (serviceSamples.length === 0) return;
@@ -51,29 +99,54 @@ export async function ingestTraffic(db: Database, nodeId: number, samples: GostS
   // traffic. Shared exit listeners (service-t{tunnelId}) do not parse as rule
   // ids and are excluded from the RULE ledger/buckets — they still count
   // toward the node's own totals.
+  // TODO(billing): relay-mode exit legs cannot be attributed per rule — the
+  // shared listener multiplexes a tunnel's rules over one port and the observer
+  // sample carries no in-band destination, so only the entry leg reaches the
+  // rule ledger. Multi-leg usage is therefore under-counted on relay tunnels
+  // relative to the "every serving node's leg counts, trimmed by per-node rate"
+  // model (raw tunnels attribute both legs). Fix directions to evaluate:
+  // per-connection destination capture at the relay exit (agent-side handler
+  // hook emitting synthetic per-rule samples), or billing the exit leg at
+  // tunnel granularity from service-t totals.
   const isRuleService = (name: string) => /^service-(\d+)$/.test(name) && Number(name.slice(8)) > 0;
 
   // Deltas are computed for EVERY service (shared exits included): the node
   // totals need them, which is also why traffic_counters now tracks
-  // service-t* rows.
+  // service-t* rows. The IN lists are chunked: D1 caps bound parameters per
+  // statement (100) and a busy node's batch can reference many services.
   const names = [...new Set(serviceSamples.map((s) => s.service))];
-  const counterRows = await db
-    .select()
-    .from(trafficCounters)
-    .where(and(eq(trafficCounters.node_id, nodeId), inArray(trafficCounters.service, names)));
-  const last = new Map(counterRows.map((c) => [c.service, { upload: c.upload, download: c.download }]));
+  const last = new Map<string, { upload: number; download: number }>();
+  for (let i = 0; i < names.length; i += 90) {
+    const part = names.slice(i, i + 90);
+    const rows = await db
+      .select()
+      .from(trafficCounters)
+      .where(and(eq(trafficCounters.node_id, nodeId), inArray(trafficCounters.service, part)));
+    for (const c of rows) last.set(c.service, { upload: c.upload, download: c.download });
+  }
 
   const ruleIds = [
     ...new Set(serviceSamples.filter((s) => isRuleService(s.service)).map((s) => Number(s.service.slice(8)))),
   ];
-  const ruleRows =
-    ruleIds.length > 0
-      ? await db
-          .select({ id: relayRules.id, user_id: relayRules.user_id })
-          .from(relayRules)
-          .where(inArray(relayRules.id, ruleIds))
-      : [];
-  const ownerOf = new Map(ruleRows.map((r) => [r.id, r.user_id ?? 0]));
+  // Billing authorization: the service string is attacker-controlled (any node
+  // token holder can POST arbitrary names), and a forged service-{ruleId} would
+  // bill ANY tenant's ledger — draining their quota until the sweep hard-stops
+  // their rules everywhere. A sample may only enter the rule ledger when the
+  // reporting node actually deploys that rule's service (see nodeRuleTunnels);
+  // foreign services still count toward the node's own totals, which is the
+  // documented self-reporting trust boundary.
+  const ruleTunnels = nodeTunnels ?? (await nodeRuleTunnels(db, nodeId));
+  const ownerOf = new Map<number, number>();
+  for (let i = 0; i < ruleIds.length; i += 90) {
+    const part = ruleIds.slice(i, i + 90);
+    const rows = await db
+      .select({ id: relayRules.id, user_id: relayRules.user_id, tunnel_id: relayRules.tunnel_id })
+      .from(relayRules)
+      .where(inArray(relayRules.id, part));
+    for (const r of rows) {
+      if (r.tunnel_id !== null && ruleTunnels.has(r.tunnel_id)) ownerOf.set(r.id, r.user_id ?? 0);
+    }
+  }
 
   const now = new Date().toISOString();
   const hourTs = hourFloorIso(now);
@@ -101,6 +174,9 @@ export async function ingestTraffic(db: Database, nodeId: number, samples: GostS
     if (!isRuleService(s.service)) continue;
     if (dUp <= 0 && dDown <= 0) continue;
     const ruleId = Number(s.service.slice(8));
+    // Foreign rule (node does not serve this rule's tunnel): the sample fed
+    // the node's own totals above and stops here — never the victim's ledger.
+    if (!ownerOf.has(ruleId)) continue;
     const bucket = buckets.get(ruleId) ?? {
       ruleId,
       userId: ownerOf.get(ruleId) ?? 0,

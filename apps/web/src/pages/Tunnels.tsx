@@ -1,5 +1,5 @@
 import { Button, FieldError, Switch, Table } from "@heroui/react";
-import { IconPencil, IconPlus, IconRoute, IconTrash } from "@tabler/icons-react";
+import { IconPencil, IconPlus, IconRefresh, IconRoute, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type Chain,
@@ -498,6 +498,7 @@ export default function TunnelsPage() {
         }
       />
       <ListToolbar>
+        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => tunnelsQuery.refetch()} />
         <SearchInput value={search} onChange={setSearch} placeholder="搜索隧道" />
       </ListToolbar>
       {tunnelsQuery.isError ? (

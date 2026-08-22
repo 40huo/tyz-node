@@ -186,10 +186,10 @@ function NodeForm({
         />
         <NumberForm
           label="计费倍率"
-          minValue={0.1}
+          minValue={0}
           maxValue={100}
           step={0.1}
-          hint="真实流量 × 倍率"
+          hint="真实流量 × 倍率；0 = 仅记录不计费"
           value={values.rate}
           onChange={(v) => set("rate", v ?? 1)}
         />
@@ -530,6 +530,14 @@ export default function NodesPage() {
         }
       />
       <ListToolbar>
+        <IconAction
+          label="刷新"
+          icon={<IconRefresh size={16} stroke={2} />}
+          onPress={() => {
+            nodesQuery.refetch();
+            healthQuery.refetch();
+          }}
+        />
         <SearchInput value={search} onChange={setSearch} placeholder="搜索节点 / 地址" />
       </ListToolbar>
       {nodesQuery.isError ? (

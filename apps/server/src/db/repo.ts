@@ -9,7 +9,7 @@ import type {
   TunnelPayload,
 } from "@tyz/shared";
 import { ChainType, ForwardMode as ForwardModeEnum, Transport } from "@tyz/shared";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { applyRuleQuotas } from "../services/quota";
 import { ensureTlsMaterial } from "../services/tls";
 import type { Database } from "./index";
@@ -197,9 +197,22 @@ async function ensureTunnelRelayAuth(db: Database, rows: TunnelRow[]): Promise<v
     if (row.relay_auth_user && row.relay_auth_pass) continue;
     const user = `relay-${row.id}-${randomHex(4)}`;
     const pass = randomHex(16);
-    await db.update(tunnels).set({ relay_auth_user: user, relay_auth_pass: pass }).where(eq(tunnels.id, row.id));
-    row.relay_auth_user = user;
-    row.relay_auth_pass = pass;
+    // Parallel per-node recomputes may both see the NULL auth: the conditional
+    // update lets exactly one writer win, and the re-read adopts the winner's
+    // values so every node snapshot embeds the same credentials.
+    await db
+      .update(tunnels)
+      .set({ relay_auth_user: user, relay_auth_pass: pass })
+      .where(and(eq(tunnels.id, row.id), isNull(tunnels.relay_auth_user)));
+    const stored = await db
+      .select({ relay_auth_user: tunnels.relay_auth_user, relay_auth_pass: tunnels.relay_auth_pass })
+      .from(tunnels)
+      .where(eq(tunnels.id, row.id))
+      .get();
+    if (stored?.relay_auth_user && stored?.relay_auth_pass) {
+      row.relay_auth_user = stored.relay_auth_user;
+      row.relay_auth_pass = stored.relay_auth_pass;
+    }
   }
 }
 

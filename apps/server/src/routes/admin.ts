@@ -143,15 +143,26 @@ async function recomputeAndNotify(env: Bindings, nodeId: number): Promise<boolea
   return res.ok;
 }
 
-/** Recompute config snapshots for every node that has a chain in the tunnel, then notify them. */
+/**
+ * Recompute config snapshots for every node that has a chain in the tunnel, then notify them.
+ * Node aggregations are independent, so they run in PARALLEL — wall time stays
+ * ~one node's recompute regardless of fleet size (each aggregation is 10-15
+ * sequential D1 roundtrips; a serial loop made admin writes scale with O(nodes)).
+ * A single node's failure is logged and skipped, never failing the admin write:
+ * the daily cron's full recompute self-heals it.
+ */
 async function recomputeTunnelNodes(env: Bindings, tunnelId: number): Promise<void> {
   const db = createDb(env.DB);
   const rows = await db.selectDistinct({ node_id: chains.node_id }).from(chains).where(eq(chains.tunnel_id, tunnelId));
+  const results = await Promise.allSettled(rows.map(({ node_id }) => recomputeNodeConfig(db, node_id)));
   const changed: number[] = [];
-  for (const { node_id } of rows) {
-    const res = await recomputeNodeConfig(db, node_id);
-    if (res.changed) changed.push(node_id);
-  }
+  results.forEach((result, i) => {
+    if (result.status === "fulfilled") {
+      if (result.value.changed) changed.push(rows[i].node_id);
+    } else {
+      console.error(`recompute node ${rows[i].node_id} (tunnel ${tunnelId}) failed`, result.reason);
+    }
+  });
   if (changed.length > 0) {
     await notifyConfigChanged(env, changed);
   }
@@ -164,11 +175,9 @@ async function recomputeUserNodes(env: Bindings, userId: number): Promise<void> 
     .selectDistinct({ tunnel_id: relayRules.tunnel_id })
     .from(relayRules)
     .where(eq(relayRules.user_id, userId));
-  for (const { tunnel_id } of rows) {
-    if (tunnel_id !== null) {
-      await recomputeTunnelNodes(env, tunnel_id);
-    }
-  }
+  await Promise.all(
+    rows.map(({ tunnel_id }) => (tunnel_id !== null ? recomputeTunnelNodes(env, tunnel_id) : undefined)),
+  );
 }
 
 // ---- Forward-mode / TLS shape validation ----
