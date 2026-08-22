@@ -26,6 +26,7 @@ import (
 
 	coreadmission "github.com/go-gost/core/admission"
 	corechain "github.com/go-gost/core/chain"
+	corelistener "github.com/go-gost/core/listener"
 	corelogger "github.com/go-gost/core/logger"
 	coregistry "github.com/go-gost/core/registry"
 	coreservice "github.com/go-gost/core/service"
@@ -186,7 +187,7 @@ func (a *Applier) RestartService(name string) error {
 		return fmt.Errorf("register service %q on restart: %w", name, err)
 	}
 	go func() {
-		if err := svc.Serve(); err != nil && !errors.Is(err, net.ErrClosed) {
+		if err := svc.Serve(); err != nil && !isNormalServeExit(err) {
 			a.log.Error("GOST service serve failed after restart", "name", name, "error", err)
 		}
 	}()
@@ -404,6 +405,14 @@ func (a *Applier) reconcileQuotas(last, desired []*config.QuotaConfig) error {
 	return nil
 }
 
+// isNormalServeExit reports whether a Serve error is merely the listener being
+// closed underneath the accept loop — the normal exit for replaced/stopped
+// services. Plain net listeners return net.ErrClosed; go-gost's custom
+// transports (grpc/ws/quic/...) return their own listener.ErrClosed.
+func isNormalServeExit(err error) bool {
+	return errors.Is(err, net.ErrClosed) || errors.Is(err, corelistener.ErrClosed)
+}
+
 // isServiceDead reports whether a registered service's accept loop has exited
 // permanently (x/service sets StateClosed only when Serve() returns with a
 // non-temporary error). A dead service keeps its registry entry but forwards
@@ -466,8 +475,7 @@ func (a *Applier) reconcileServices(last, desired []*config.ServiceConfig) map[s
 		}
 		go func(name string) {
 			if err := svc.Serve(); err != nil {
-				// A closed listener is the normal exit for replaced/stopped services.
-				if errors.Is(err, net.ErrClosed) {
+				if isNormalServeExit(err) {
 					a.log.Debug("GOST service exited", "name", name)
 					return
 				}
