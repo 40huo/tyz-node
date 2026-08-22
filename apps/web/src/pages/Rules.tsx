@@ -1,5 +1,5 @@
-import { Button, Table, toast } from "@heroui/react";
-import { IconPlus } from "@tabler/icons-react";
+import { Button, Table, Tooltip, toast } from "@heroui/react";
+import { IconEraser, IconPencil, IconPlayerPlay, IconPlus, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type AdminRuleRow,
@@ -20,20 +20,20 @@ import { confirmDanger } from "../confirm";
 import { formatTraffic } from "../format";
 import { quotaStopReasonLabel, ruleStatusLabel } from "../labels";
 import {
+  DataText,
   emptyState,
-  FilterChips,
+  FilterTabs,
   type FormErrors,
   FormFooter,
   FormModal,
   FormShell,
   fail,
   hasErrors,
+  IconAction,
   ListToolbar,
-  Mono,
   NumberForm,
   PageHeader,
   PageShell,
-  RowButton,
   SearchInput,
   SelectForm,
   StatusChip,
@@ -386,12 +386,13 @@ export default function RulesPage() {
         }
       />
       <ListToolbar>
-        <SearchInput value={search} onChange={setSearch} placeholder="搜索规则 / 端口 / 目标" />
-        <FilterChips
+        <FilterTabs
+          label="状态筛选"
           options={RULE_FILTERS.map((f) => ({ ...f, count: counts[f.value] }))}
           value={filter}
           onChange={setFilter}
         />
+        <SearchInput value={search} onChange={setSearch} placeholder="搜索规则 / 端口 / 目标" />
       </ListToolbar>
       {rulesQuery.isError ? (
         <TableError onRetry={() => rulesQuery.refetch()} />
@@ -435,16 +436,16 @@ export default function RulesPage() {
                 {(r) => (
                   <Table.Row id={r.id}>
                     <Table.Cell>
-                      <Mono>{r.id}</Mono>
+                      <DataText>{r.id}</DataText>
                     </Table.Cell>
                     <Table.Cell>
                       <span className="font-medium">{r.name}</span>
                     </Table.Cell>
                     <Table.Cell>
-                      <Mono>{r.listen_port}</Mono>
+                      <DataText>{r.listen_port}</DataText>
                     </Table.Cell>
                     <Table.Cell>
-                      <Mono>{r.targets}</Mono>
+                      <DataText>{r.targets}</DataText>
                       {r.endpoint_id !== undefined && (
                         <span className="ml-2 text-xs text-muted">
                           {endpoints.find((e) => e.id === r.endpoint_id)?.name ?? `端点 #${r.endpoint_id}`}
@@ -455,7 +456,7 @@ export default function RulesPage() {
                       {r.tunnel_id ? (
                         <span>
                           {tunnels.find((t) => t.id === r.tunnel_id)?.name ?? "?"}{" "}
-                          <Mono className="text-muted">#{r.tunnel_id}</Mono>
+                          <DataText className="text-muted">#{r.tunnel_id}</DataText>
                         </span>
                       ) : (
                         "-"
@@ -469,10 +470,17 @@ export default function RulesPage() {
                       )}
                     </Table.Cell>
                     <Table.Cell>
-                      <span className="flex flex-col" title="观测计数（各节点腿求和），可在操作里清零；计费以台账为准">
-                        <Mono>入 {formatTraffic(r.upload_traffic)}</Mono>
-                        <Mono>出 {formatTraffic(r.download_traffic)}</Mono>
-                      </span>
+                      <Tooltip delay={0}>
+                        <Tooltip.Trigger>
+                          <span className="flex flex-col">
+                            <DataText>入 {formatTraffic(r.upload_traffic)}</DataText>
+                            <DataText>出 {formatTraffic(r.download_traffic)}</DataText>
+                          </span>
+                        </Tooltip.Trigger>
+                        <Tooltip.Content className="max-w-sm">
+                          <p>观测计数（各节点腿求和），可在操作里清零；计费以台账为准</p>
+                        </Tooltip.Content>
+                      </Tooltip>
                     </Table.Cell>
                     <Table.Cell>
                       <div className="flex items-center gap-1">
@@ -490,12 +498,22 @@ export default function RulesPage() {
                       </div>
                     </Table.Cell>
                     <Table.Cell>
-                      <div className="flex justify-end gap-1">
-                        <RowButton onPress={() => setEditing(r)}>编辑</RowButton>
-                        <RowButton isDisabled={restartMutation.isPending} onPress={() => restartMutation.mutate(r.id)}>
-                          重启
-                        </RowButton>
-                        <RowButton
+                      <div className="flex justify-end gap-0.5">
+                        <IconAction
+                          label="编辑"
+                          icon={<IconPencil size={16} stroke={2} />}
+                          onPress={() => setEditing(r)}
+                        />
+                        <IconAction
+                          label="重启服务"
+                          tone="warning"
+                          icon={<IconPlayerPlay size={16} stroke={2} />}
+                          isDisabled={restartMutation.isPending}
+                          onPress={() => restartMutation.mutate(r.id)}
+                        />
+                        <IconAction
+                          label="清零流量计数"
+                          icon={<IconEraser size={16} stroke={2} />}
                           isDisabled={resetTrafficMutation.isPending}
                           onPress={() =>
                             confirmDanger(
@@ -504,17 +522,15 @@ export default function RulesPage() {
                               () => resetTrafficMutation.mutate(r.id),
                             )
                           }
-                        >
-                          清零
-                        </RowButton>
-                        <RowButton
-                          danger
+                        />
+                        <IconAction
+                          label="删除"
+                          tone="danger"
+                          icon={<IconTrash size={16} stroke={2} />}
                           onPress={() =>
                             confirmDanger("删除规则", "确定删除该规则？", () => deleteMutation.mutate(r.id))
                           }
-                        >
-                          删除
-                        </RowButton>
+                        />
                       </div>
                     </Table.Cell>
                   </Table.Row>

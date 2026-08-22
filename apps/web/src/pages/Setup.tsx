@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { FormShell, fail, Mono, SubmitButton, TextForm } from "../ui";
+import { DataText, FormShell, fail, SubmitButton, TextForm } from "../ui";
 
 const USERNAME_RE = /^[A-Za-z0-9_-]{3,32}$/;
 
@@ -66,7 +66,8 @@ export default function SetupPage() {
               <div className="flex flex-col gap-2 py-2 text-sm text-muted">
                 <p>数据库表尚未创建（迁移未执行）。</p>
                 <p>
-                  请确认部署命令已配置为 <Mono>bun run deploy:server</Mono>（含自动迁移）并重新部署，然后刷新此页。
+                  请确认部署命令已配置为 <DataText>bun run deploy:server</DataText>
+                  （含自动迁移）并重新部署，然后刷新此页。
                 </p>
               </div>
             ) : (

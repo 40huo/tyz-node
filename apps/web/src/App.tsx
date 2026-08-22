@@ -1,11 +1,12 @@
 import { Button, Drawer, Tooltip, toast } from "@heroui/react";
+import { buttonVariants } from "@heroui/styles";
 import {
   IconArrowsExchange,
   IconChevronDown,
-  IconChevronsLeft,
-  IconChevronsRight,
   IconCreditCard,
   IconGauge,
+  IconLayoutSidebarLeftCollapse,
+  IconLayoutSidebarLeftExpand,
   IconLogout,
   IconMenu2,
   IconMoon,
@@ -18,7 +19,7 @@ import {
   IconUsers,
 } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
-import { type ComponentProps, type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, setUnauthorizedHandler } from "./api";
 import AuditPage from "./pages/Audit";
@@ -47,15 +48,15 @@ interface NavEntry {
   title?: string;
 }
 
-const DASHBOARD_ITEM: NavEntry = { to: "/", label: "控制台", icon: <IconGauge size={18} stroke={1.7} /> };
+const DASHBOARD_ITEM: NavEntry = { to: "/", label: "控制台", icon: <IconGauge size={18} stroke={2} /> };
 
 const BUSINESS_ITEMS: NavEntry[] = [
-  { to: "/nodes", label: "节点", icon: <IconServer size={18} stroke={1.7} />, title: "节点管理" },
-  { to: "/tunnels", label: "隧道", icon: <IconNetwork size={18} stroke={1.7} />, title: "隧道管理" },
-  { to: "/rules", label: "转发规则", icon: <IconArrowsExchange size={18} stroke={1.7} /> },
-  { to: "/endpoints", label: "目标端点", icon: <IconTargetArrow size={18} stroke={1.7} />, title: "目标端点管理" },
-  { to: "/users", label: "用户", icon: <IconUsers size={18} stroke={1.7} />, title: "用户管理" },
-  { to: "/packages", label: "套餐", icon: <IconCreditCard size={18} stroke={1.7} />, title: "套餐管理" },
+  { to: "/nodes", label: "节点", icon: <IconServer size={18} stroke={2} />, title: "节点管理" },
+  { to: "/tunnels", label: "隧道", icon: <IconNetwork size={18} stroke={2} />, title: "隧道管理" },
+  { to: "/rules", label: "转发规则", icon: <IconArrowsExchange size={18} stroke={2} /> },
+  { to: "/endpoints", label: "目标端点", icon: <IconTargetArrow size={18} stroke={2} />, title: "目标端点管理" },
+  { to: "/users", label: "用户", icon: <IconUsers size={18} stroke={2} />, title: "用户管理" },
+  { to: "/packages", label: "套餐", icon: <IconCreditCard size={18} stroke={2} />, title: "套餐管理" },
 ];
 
 const SETTINGS_ITEMS: NavEntry[] = [
@@ -67,7 +68,7 @@ const SETTINGS_ITEMS: NavEntry[] = [
   { to: "/settings/audit", label: "操作审计" },
 ];
 
-const PROFILE_ITEM: NavEntry = { to: "/profile", label: "个人中心", icon: <IconUserCircle size={18} stroke={1.7} /> };
+const PROFILE_ITEM: NavEntry = { to: "/profile", label: "个人中心", icon: <IconUserCircle size={18} stroke={2} /> };
 
 const ALL_NAV_ENTRIES = [DASHBOARD_ITEM, ...BUSINESS_ITEMS, ...SETTINGS_ITEMS, PROFILE_ITEM];
 
@@ -82,12 +83,30 @@ const SIDEBAR_NARROW = "w-[68px]";
 
 // ---- Layout pieces ----
 
+/** 品牌 mark：双箭头转发符号，与 favicon 同款；颜色跟随 accent 主题 token。 */
+function BrandMark() {
+  return (
+    <div className="flex size-[30px] shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+      <svg
+        viewBox="0 0 32 32"
+        className="size-[17px]"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={3.4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M11 10l6 6-6 6M19 10l6 6-6 6" />
+      </svg>
+    </div>
+  );
+}
+
 function Brand({ collapsed }: { collapsed?: boolean }) {
   return (
     <div className={cn("flex items-center gap-2.5", collapsed && "justify-center")}>
-      <div className="flex size-[30px] shrink-0 items-center justify-center rounded-lg bg-accent text-sm font-bold text-accent-foreground">
-        T
-      </div>
+      <BrandMark />
       {!collapsed && <span className="font-semibold">TYZ 控制台</span>}
     </div>
   );
@@ -96,15 +115,16 @@ function Brand({ collapsed }: { collapsed?: boolean }) {
 function ThemeToggle({ isDark, onToggle }: { isDark: boolean; onToggle: () => void }) {
   return (
     <Button isIconOnly variant="ghost" size="sm" aria-label="切换主题" onPress={onToggle}>
-      {isDark ? <IconSun size={18} stroke={1.7} /> : <IconMoon size={18} stroke={1.7} />}
+      {isDark ? <IconSun size={18} stroke={2} /> : <IconMoon size={18} stroke={2} />}
     </Button>
   );
 }
 
 /**
- * 导航项按钮：HeroUI Button 的样式与按压交互落在 react-router Link 上（真实 <a>，
- * 支持中键/新标签打开）。RAC 的 render props 按 <button> 类型化，事件处理器落到
- * <a> 上类型不兼容——运行时安全，在这里收窄一次。
+ * 导航项链接：真实 <a>（支持中键/新标签打开），直接挂 HeroUI ghost sm 按钮类
+ * （.button 的 hover/active/focus 样式同时命中 :hover/:active/:focus-visible 原生
+ * 选择器，不依赖 RAC 交互属性）。不用 Button 的 render 换标签——宿主标签与 <a>
+ * 不一致时 RAC 每次渲染都会告警 Expected <button>, got <a>。
  */
 function NavButton({
   to,
@@ -120,17 +140,14 @@ function NavButton({
   onNavigate?: () => void;
 }) {
   return (
-    <Button
-      render={(props) => (
-        <Link {...(props as ComponentProps<typeof Link>)} to={to} aria-label={label}>
-          {children}
-        </Link>
-      )}
-      variant="ghost"
-      size="sm"
-      className={className}
-      onPress={onNavigate}
-    />
+    <Link
+      to={to}
+      aria-label={label}
+      onClick={onNavigate}
+      className={cn(buttonVariants({ variant: "ghost", size: "sm" }), className)}
+    >
+      {children}
+    </Link>
   );
 }
 
@@ -165,7 +182,8 @@ function NavItem({
   if (collapsed && !small) {
     return (
       <Tooltip delay={0}>
-        {button}
+        {/* NavButton 是原生 <a>（不消费 RAC 的 focus context），须经 Tooltip.Trigger 桥接 hover；侧栏行全宽 */}
+        <Tooltip.Trigger className="block w-full">{button}</Tooltip.Trigger>
         <Tooltip.Content placement="right">
           <p>{entry.label}</p>
         </Tooltip.Content>
@@ -216,17 +234,19 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed?: boolean; onNavigate
         <GroupLabel collapsed={collapsed}>系统</GroupLabel>
         {collapsed ? (
           <Tooltip delay={0}>
-            <NavButton
-              to={SETTINGS_ITEMS[0].to}
-              label="系统设置"
-              onNavigate={onNavigate}
-              className={cn(
-                "h-9 w-full justify-center px-0 font-normal",
-                settingsActive && "bg-accent-soft font-medium text-accent-soft-foreground",
-              )}
-            >
-              <IconSettings size={18} stroke={1.7} />
-            </NavButton>
+            <Tooltip.Trigger className="block w-full">
+              <NavButton
+                to={SETTINGS_ITEMS[0].to}
+                label="系统设置"
+                onNavigate={onNavigate}
+                className={cn(
+                  "h-9 w-full justify-center px-0 font-normal",
+                  settingsActive && "bg-accent-soft font-medium text-accent-soft-foreground",
+                )}
+              >
+                <IconSettings size={18} stroke={2} />
+              </NavButton>
+            </Tooltip.Trigger>
             <Tooltip.Content placement="right">
               <p>系统设置</p>
             </Tooltip.Content>
@@ -242,11 +262,11 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed?: boolean; onNavigate
             )}
             onPress={() => setSettingsOpen((v) => !v)}
           >
-            <IconSettings size={18} stroke={1.7} />
+            <IconSettings size={18} stroke={2} />
             系统设置
             <IconChevronDown
               size={16}
-              stroke={1.7}
+              stroke={2}
               className={cn("ml-auto transition-transform", open && "rotate-180")}
             />
           </Button>
@@ -318,11 +338,25 @@ function AppLayout() {
           isIconOnly
           variant="ghost"
           size="sm"
+          aria-label={collapsed ? "展开侧栏" : "收起侧栏"}
+          className="hidden h-8 text-muted md:inline-flex"
+          onPress={toggleCollapsed}
+        >
+          {collapsed ? (
+            <IconLayoutSidebarLeftExpand size={18} stroke={2} />
+          ) : (
+            <IconLayoutSidebarLeftCollapse size={18} stroke={2} />
+          )}
+        </Button>
+        <Button
+          isIconOnly
+          variant="ghost"
+          size="sm"
           aria-label="打开导航"
           className="md:hidden"
           onPress={() => setNavOpen(true)}
         >
-          <IconMenu2 size={18} stroke={1.7} />
+          <IconMenu2 size={18} stroke={2} />
         </Button>
         <span className="md:hidden">
           <Brand />
@@ -337,19 +371,25 @@ function AppLayout() {
             className="hidden h-8 gap-1.5 px-2 text-muted sm:flex"
             onPress={() => navigate("/profile")}
           >
-            <IconUserCircle size={16} stroke={1.7} />
+            <IconUserCircle size={16} stroke={2} />
             {meQuery.data?.username ?? "…"}
           </Button>
-          <Button variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-muted" onPress={logout}>
-            <IconLogout size={16} stroke={1.7} />
-            <span className="hidden sm:inline">退出登录</span>
+          <Button
+            isIconOnly
+            variant="ghost"
+            size="sm"
+            aria-label="退出登录"
+            className="h-8 text-muted"
+            onPress={logout}
+          >
+            <IconLogout size={18} stroke={2} />
           </Button>
         </div>
       </header>
 
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-30 hidden flex-col justify-between overflow-x-hidden border-r border-border px-3 py-4 transition-[width] md:flex",
+          "fixed inset-y-0 left-0 z-30 hidden flex-col overflow-x-hidden border-r border-border px-3 py-4 transition-[width] md:flex",
           collapsed ? SIDEBAR_NARROW : SIDEBAR_WIDE,
         )}
       >
@@ -358,18 +398,6 @@ function AppLayout() {
             <Brand collapsed={collapsed} />
           </div>
           <SidebarNav collapsed={collapsed} />
-        </div>
-        <div className={cn("flex items-center gap-2 pb-1", collapsed ? "justify-center" : "justify-between px-3")}>
-          {!collapsed && <p className="text-xs text-muted">GOST 隧道管理平台</p>}
-          <Button
-            isIconOnly
-            variant="ghost"
-            size="sm"
-            aria-label={collapsed ? "展开侧栏" : "收起侧栏"}
-            onPress={toggleCollapsed}
-          >
-            {collapsed ? <IconChevronsRight size={16} stroke={1.7} /> : <IconChevronsLeft size={16} stroke={1.7} />}
-          </Button>
         </div>
       </aside>
 
@@ -395,8 +423,23 @@ function AppLayout() {
         tabIndex={-1}
         className={cn("transition-[padding] outline-none", collapsed ? "md:pl-[68px]" : "md:pl-56")}
       >
-        <div className="mx-auto max-w-[1200px] p-4 md:p-6">
+        <div className="mx-auto max-w-[1600px] p-4 md:p-6">
           <Outlet />
+          <footer className="mt-10 border-t border-border pt-4 pb-2 text-center text-sm text-muted">
+            © {new Date().getFullYear()} LaoShan Technology
+            {/* GitHub 官方 mark（实心 silhouette，octicons）——tabler 只有描线版 */}
+            <a
+              href="https://github.com/laoshan-tech/tyz"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="GitHub 仓库"
+              className="ml-1.5 inline-flex translate-y-[2px] text-muted outline-accent hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2"
+            >
+              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden className="size-4">
+                <path d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z" />
+              </svg>
+            </a>
+          </footer>
         </div>
       </main>
     </div>

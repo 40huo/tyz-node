@@ -1,15 +1,5 @@
 import { Card, Skeleton, Tabs } from "@heroui/react";
-import {
-  IconAlertTriangle,
-  IconArrowsExchange,
-  IconList,
-  IconNetwork,
-  IconPlayerPause,
-  IconPlayerPlay,
-  IconPlus,
-  IconServer,
-  IconUsers,
-} from "@tabler/icons-react";
+import { IconArrowsExchange, IconNetwork, IconPlus, IconServer, IconUsers } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import type { DashboardSummary } from "@tyz/shared";
 import { type ReactNode, useMemo, useState } from "react";
@@ -18,7 +8,7 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RToolti
 import { api } from "../api";
 import { formatTraffic } from "../format";
 import { auditActionLabel } from "../labels";
-import { cn, Mono, PageHeader, PageShell, StatusChip } from "../ui";
+import { cn, DataText, PageHeader, PageShell, StatusChip } from "../ui";
 
 const REFRESH_MS = 60_000;
 
@@ -28,28 +18,28 @@ const REFRESH_MS = 60_000;
 // 误继承的描边由 index.css 的 .recharts-area-area 规则取消。
 const UP_COLOR = "#10b981";
 const UP_STROKE = "var(--success)";
-const DOWN_COLOR = "#6366f1";
+const DOWN_COLOR = "#737373";
 const DOWN_STROKE = "var(--accent)";
 const SERIES_STROKES: Record<string, string> = { 上行: UP_STROKE, 下行: DOWN_STROKE };
 
-// ---- Row 1: 状态统计卡 ----
+// ---- Row 1: 状态统计卡（文字+数字在左，图标在右；异常以小字说明并点亮图标底色） ----
 
 const CARD_TONES = {
-  success: "bg-success-soft text-success-soft-foreground",
-  warning: "bg-warning-soft text-warning-soft-foreground",
+  default: "bg-default text-default-foreground",
   danger: "bg-danger-soft text-danger-soft-foreground",
+  warning: "bg-warning-soft text-warning-soft-foreground",
 } as const;
 
 function StatusCard({
   to,
-  tone,
+  tone = "default",
   icon,
   label,
   value,
   hint,
 }: {
   to: string;
-  tone: keyof typeof CARD_TONES;
+  tone?: keyof typeof CARD_TONES;
   icon: ReactNode;
   label: string;
   value?: number;
@@ -61,14 +51,15 @@ function StatusCard({
       className="group block rounded-md outline-accent focus-visible:outline-2 focus-visible:outline-offset-2"
     >
       <Card className="transition-colors group-hover:border-accent">
-        <Card.Content className="flex items-center gap-4">
-          <div className={cn("flex size-11 shrink-0 items-center justify-center rounded-lg", CARD_TONES[tone])}>
-            {icon}
-          </div>
-          <div className="min-w-0">
+        <Card.Content className="flex flex-row items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-col gap-0.5">
             <p className="text-sm text-muted">{label}</p>
             <p className="text-2xl font-semibold leading-tight tabular-nums">{value === undefined ? "--" : value}</p>
-            {hint && <p className="truncate text-xs text-muted">{hint}</p>}
+            {/* 始终渲染占位行保证四张卡片等高；异常信号由右侧图标底色承载，小字保持 muted 不抢戏 */}
+            <p className="truncate text-xs text-muted">{hint ?? "\u00A0"}</p>
+          </div>
+          <div className={cn("flex size-11 shrink-0 items-center justify-center rounded-lg", CARD_TONES[tone])}>
+            {icon}
           </div>
         </Card.Content>
       </Card>
@@ -98,7 +89,7 @@ function TrafficTooltip({ active, payload, label }: TrafficTooltipProps) {
             style={{ background: SERIES_STROKES[entry.name ?? ""] ?? entry.color }}
           />
           {entry.name}
-          <Mono>{formatTraffic(entry.value ?? 0)}</Mono>
+          <DataText>{formatTraffic(entry.value ?? 0)}</DataText>
         </p>
       ))}
     </div>
@@ -130,16 +121,20 @@ function TrafficChartCard() {
         <Card.Description>全平台按小时聚合（已含线路倍率），60 秒自动刷新</Card.Description>
       </Card.Header>
       <Card.Content className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <Tabs
             aria-label="时间范围"
             selectedKey={range}
             onSelectionChange={(key) => setRange(key as TrafficRange)}
-            className="w-fit"
+            className="w-fit shrink-0"
           >
             <Tabs.List>
-              <Tabs.Tab id="24h">24 小时</Tabs.Tab>
-              <Tabs.Tab id="7d">近 7 天</Tabs.Tab>
+              <Tabs.Tab id="24h" className="whitespace-nowrap">
+                24 小时
+              </Tabs.Tab>
+              <Tabs.Tab id="7d" className="whitespace-nowrap">
+                近 7 天
+              </Tabs.Tab>
             </Tabs.List>
           </Tabs>
           <div className="flex items-center gap-3 text-xs text-muted">
@@ -244,7 +239,7 @@ function NodeHealthWall({ nodes, loading }: { nodes: DashboardSummary["nodes_hea
                 <div className="flex min-w-0 items-center gap-2">
                   <IconServer
                     size={18}
-                    stroke={1.7}
+                    stroke={2}
                     className={cn(
                       "shrink-0",
                       n.failed > 0 ? "text-danger" : n.services === 0 ? "text-muted" : "text-success",
@@ -290,8 +285,8 @@ function TodayTrafficCard({ traffic }: { traffic: DashboardSummary["traffic"] | 
         </p>
         {traffic && (
           <p className="text-sm text-muted">
-            上行 <Mono>{formatTraffic(traffic.today.upload)}</Mono> · 下行{" "}
-            <Mono>{formatTraffic(traffic.today.download)}</Mono>
+            上行 <DataText>{formatTraffic(traffic.today.upload)}</DataText> · 下行{" "}
+            <DataText>{formatTraffic(traffic.today.download)}</DataText>
           </p>
         )}
         <p className="text-xs text-muted">
@@ -303,10 +298,10 @@ function TodayTrafficCard({ traffic }: { traffic: DashboardSummary["traffic"] | 
 }
 
 const QUICK_ACTIONS = [
-  { to: "/nodes?create=1", label: "新建节点", icon: <IconServer size={16} stroke={1.7} /> },
-  { to: "/tunnels?create=1", label: "新建隧道", icon: <IconNetwork size={16} stroke={1.7} /> },
-  { to: "/rules?create=1", label: "新建规则", icon: <IconArrowsExchange size={16} stroke={1.7} /> },
-  { to: "/users?create=1", label: "新建用户", icon: <IconUsers size={16} stroke={1.7} /> },
+  { to: "/nodes?create=1", label: "新建节点", icon: <IconServer size={16} stroke={2} /> },
+  { to: "/tunnels?create=1", label: "新建隧道", icon: <IconNetwork size={16} stroke={2} /> },
+  { to: "/rules?create=1", label: "新建规则", icon: <IconArrowsExchange size={16} stroke={2} /> },
+  { to: "/users?create=1", label: "新建用户", icon: <IconUsers size={16} stroke={2} /> },
 ];
 
 function QuickActionsCard() {
@@ -368,15 +363,15 @@ function RecentActivityCard() {
               const info = auditActionLabel(r.action);
               return (
                 <div key={r.id} className="flex items-center gap-3 border-b border-border py-2 last:border-b-0">
-                  <Mono className="w-[7.5rem] shrink-0 text-muted">{r.ts.slice(5, 16).replace("T", " ")}</Mono>
+                  <DataText className="w-[7.5rem] shrink-0 text-muted">{r.ts.slice(5, 16).replace("T", " ")}</DataText>
                   <StatusChip tone={info.tone} title={r.action} className="shrink-0">
                     {info.label}
                   </StatusChip>
                   <span className="min-w-0 flex-1 truncate text-sm">{r.detail || "-"}</span>
                   {r.target_type && (
-                    <Mono className="hidden shrink-0 text-muted sm:inline">
+                    <DataText className="hidden shrink-0 text-muted sm:inline">
                       {r.target_type} #{r.target_id}
-                    </Mono>
+                    </DataText>
                   )}
                 </div>
               );
@@ -397,53 +392,57 @@ export default function DashboardPage() {
     refetchInterval: REFRESH_MS,
   });
   const summary = summaryQuery.data;
-  const abnormalNodes = summary?.nodes_health.filter((n) => n.failed > 0).length;
+  const nodeAbnormal = summary?.nodes_health.filter((n) => n.failed > 0).length ?? 0;
+  const nodeOffline = summary?.nodes_health.filter((n) => n.services === 0).length ?? 0;
+  const nodeHint = [
+    nodeAbnormal > 0 ? `${nodeAbnormal} 个服务异常` : null,
+    nodeOffline > 0 ? `${nodeOffline} 个未上报` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const rules = summary?.counts.rules;
+  const ruleHint = [
+    rules && rules.quota_stopped > 0 ? `配额停用 ${rules.quota_stopped}` : null,
+    rules && rules.error > 0 ? `错误 ${rules.error}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const usersAgg = summary?.counts.users;
+  const userHint = usersAgg && usersAgg.disabled > 0 ? `已禁用 ${usersAgg.disabled}` : "";
 
   return (
     <PageShell>
-      <PageHeader
-        title="控制台"
-        description="平台运行总览"
-        action={
-          <span className="flex items-center gap-1.5 text-xs text-muted">
-            <IconList size={14} stroke={1.7} />
-            60 秒自动刷新
-          </span>
-        }
-      />
+      <PageHeader title="控制台" description="平台运行总览" />
 
       <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         <StatusCard
-          to="/rules?status=running"
-          tone="success"
-          icon={<IconPlayerPlay size={22} stroke={1.7} />}
-          label="规则运行中"
-          value={summary?.counts.rules.running}
-          hint={summary ? `共 ${summary.counts.rules.total} 条规则` : undefined}
-        />
-        <StatusCard
-          to="/rules?status=paused"
-          tone="warning"
-          icon={<IconPlayerPause size={22} stroke={1.7} />}
-          label="规则已暂停"
-          value={summary?.counts.rules.paused}
-          hint={summary ? `创建中 ${summary.counts.rules.created} · 错误 ${summary.counts.rules.error}` : undefined}
-        />
-        <StatusCard
-          to="/rules?status=quota_stopped"
-          tone="danger"
-          icon={<IconAlertTriangle size={22} stroke={1.7} />}
-          label="配额停用"
-          value={summary?.counts.rules.quota_stopped}
-          hint={summary ? `订阅用户 ${summary.counts.users.subscribed} / ${summary.counts.users.total}` : undefined}
-        />
-        <StatusCard
           to="/nodes"
-          tone="danger"
-          icon={<IconServer size={22} stroke={1.7} />}
-          label="节点异常"
-          value={abnormalNodes}
-          hint={summary ? `共 ${summary.counts.nodes} 个节点 · ${summary.counts.tunnels} 条隧道` : undefined}
+          tone={nodeAbnormal > 0 ? "danger" : nodeOffline > 0 ? "warning" : "default"}
+          icon={<IconServer size={22} stroke={2} />}
+          label="节点"
+          value={summary?.counts.nodes}
+          hint={nodeHint || undefined}
+        />
+        <StatusCard
+          to="/tunnels"
+          icon={<IconNetwork size={22} stroke={2} />}
+          label="隧道"
+          value={summary?.counts.tunnels}
+        />
+        <StatusCard
+          to="/rules"
+          tone={(rules?.error ?? 0) > 0 ? "danger" : (rules?.quota_stopped ?? 0) > 0 ? "warning" : "default"}
+          icon={<IconArrowsExchange size={22} stroke={2} />}
+          label="规则"
+          value={rules?.total}
+          hint={ruleHint || undefined}
+        />
+        <StatusCard
+          to="/users"
+          icon={<IconUsers size={22} stroke={2} />}
+          label="用户"
+          value={usersAgg?.total}
+          hint={userHint || undefined}
         />
       </div>
 
