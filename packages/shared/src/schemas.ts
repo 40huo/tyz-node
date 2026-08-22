@@ -158,9 +158,11 @@ export const nodeConfigDataSchema = z.object({
 // status change or (with enableStats on the service) a periodic stats report.
 // We only forward stats events to the control plane, flattened into samples.
 
+// String caps bound request size for token-holders only — set generously so a
+// legitimate (long GOST error, long client label) sample can never be rejected.
 const gostStatsSampleSchema = z.object({
-  service: z.string(),
-  client: z.string().optional(), // handler-level (per-client) stats only
+  service: z.string().max(256),
+  client: z.string().max(256).optional(), // handler-level (per-client) stats only
   totalConns: z.number().int().nonnegative(),
   currentConns: z.number().int().nonnegative(),
   inputBytes: z.number().nonnegative(),
@@ -172,21 +174,25 @@ const gostStatsSampleSchema = z.object({
 // service with each stats flush (x/service.State: running|ready|failed|closed).
 
 const serviceHealthSampleSchema = z.object({
-  service: z.string(),
-  state: z.string(),
-  error: z.string().optional(),
+  service: z.string().max(256),
+  state: z.string().max(32),
+  error: z.string().max(2048).optional(),
 });
 
 export const agentStatsBatchSchema = z
   .object({
     // The agent marshals nil Go slices as JSON null — accept null alongside
     // absent (zod's .default only covers absence) and normalize to [].
+    // Array caps bound ingest cost; both sit above anything the agent can emit
+    // (its stats buffer is capped at 1000; health is one row per service).
     samples: z
       .array(gostStatsSampleSchema)
+      .max(1000)
       .nullish()
       .transform((v) => v ?? []),
     health: z
       .array(serviceHealthSampleSchema)
+      .max(500)
       .nullish()
       .transform((v) => v ?? []),
   })

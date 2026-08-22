@@ -73,6 +73,31 @@ WS channel policy (apps/agent/internal/cp/ws.go):
 embedded GOST observer (statsobs) ──► stats buffer ──► POST /api/agent/stats (batched) ──► D1 gost_stats
 gostapply.HealthSnapshot (x/service.Status) ──► rides the same stats POST ──► D1 service_health (latest per node+service)
 stats ingest (traffic.ts) ──► deltas vs traffic_counters ──► D1 traffic_hourly (per rule-hour ledger, billing SoT)
+billing authorization: the sample's service string is attacker-controlled, so a
+  service-{ruleId} sample only enters the rule ledger when the REPORTING node
+  actually deploys per-rule services on that tunnel (nodeRuleTunnels: IN chains
+  always; OUT chains only on raw-mode tunnels — relay exits deploy just the shared
+  service-t{tunnelId}). Multi-leg rule usage is the SUM over every serving node by
+  design; operators trim legs via per-node rate (0 = record-only). KNOWN GAP
+  (TODO): relay-mode exit legs cannot be attributed per rule (shared listener,
+  observer carries no in-band destination) — only the entry leg bills, so relay
+  tunnels under-count vs the all-legs model; raw tunnels attribute both legs; foreign samples still feed the node's own totals (the
+  documented self-report trust boundary). The health-driven rule status
+  write-back carries the same gate, reads current statuses in chunked SELECTs
+  (D1 param cap) and only issues UPDATEs on actual transitions
+D1 chunking: every batched write/IN-list is chunked to stay under D1's 100 bound
+  parameters per statement (stats insert 20 rows, health upsert 16, IN lists 90) —
+  the observer reports per (service × client), so one flush easily carries dozens of
+  samples; the agent likewise uploads in 20-sample chunks, trimming the sent prefix
+  on partial failure so an oversized batch can never wedge the retry loop. Enqueue
+  additionally MERGES consecutive snapshots of the same (service, client) — counters
+  are monotonic and the server folds batches into telescoping deltas, so only the
+  newest (plus the intra-window CurrentConns peak) is kept: the buffer holds one
+  entry per active key between flushes and uploads stay single-request
+rule status auto-sync: the stats ingest also derives relay_rules.status from the health snapshot —
+  entry service service-{ruleId} ready/running → running, failed/apply_failed → error;
+  `paused` (manual) is never overwritten; absent services keep their status
+  (status is a display label — deployment follows config, not status)
 ```
 
 ### Key server modules (`apps/server/src`)
@@ -159,7 +184,7 @@ All GOST objects are named deterministically (`service-{ruleId}` at entries, `se
 - `app_settings` (key/value; keys `tls_domain`, `session_secret`) and `tls_material` (kind PK + PEM + not_after) — see `services/tls.ts`. Keys/PEMs never selected into admin responses.
 - `users.role` ∈ {admin, user} + `users.password_hash` (NULL = cannot log in): platform admins are role='admin' rows created by the `/setup` wizard; business tenants are role='user'. **`password_hash` never appears in API responses or audit rows** (`toUser` picks fields explicitly) and the users API hides/shields admin rows (list filters, mutations 409).
 - Packages: `traffic_bytes`/`period_days`/`max_rules` 0 = unlimited; `node_ids`/`tunnel_ids` NULL = unrestricted. One active `user_packages` row per user (UNIQUE); subscribe/switch replaces it with a fresh `activated_at` (usage window restarts). `package_name`/`traffic_bytes` on the subscription are snapshots frozen at buy time.
-- `traffic_hourly` (per rule-hour, PK `(rule_id, hour_ts)`) is the billing ledger: ingest-time UPSERT accumulation of observer-counter deltas (see `services/traffic.ts` — writes go ledger-first so a crash over-counts instead of under-counting). `real_*` keep actual bytes; `billed_*` accumulate round(real × `relay_nodes.rate`) — the line billing multiplier (0.1..100, default 1.0); quota remaining is computed from BILLED bytes. Deliberately NO foreign keys: deleting a rule/user must not erase usage. `traffic_counters` holds the last cumulative snapshot per (node, service) to turn cumulative reports into deltas. `service_metrics_hourly` rolls up per-service connection samples hourly (sum+samples for exact averages, max for peaks; 7-day retention, no FK). `audit_log` records admin writes (`actor` snapshot; `detail` never holds secrets — rotate-token logs the rotation, never the token).
+- `traffic_hourly` (per rule-hour, PK `(rule_id, hour_ts)`) is the billing ledger: ingest-time UPSERT accumulation of observer-counter deltas (see `services/traffic.ts` — writes go ledger-first so a crash over-counts instead of under-counting). `real_*` keep actual bytes; `billed_*` accumulate round(real × `relay_nodes.rate`) — the line billing multiplier (0..100, default 1.0; 0 = record-only, the operator's lever for trimming multi-leg usage where every serving node's leg is summed); quota remaining is computed from BILLED bytes. Deliberately NO foreign keys: deleting a rule/user must not erase usage. `traffic_counters` holds the last cumulative snapshot per (node, service) to turn cumulative reports into deltas. `service_metrics_hourly` rolls up per-service connection samples hourly (sum+samples for exact averages, max for peaks; 7-day retention, no FK). `audit_log` records admin writes (`actor` snapshot; `detail` never holds secrets — rotate-token logs the rotation, never the token).
 
 ## Auth
 

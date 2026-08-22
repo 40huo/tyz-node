@@ -1,5 +1,13 @@
 import { Button, ProgressBar, Separator, Table, toast } from "@heroui/react";
-import { IconBan, IconCircleCheck, IconCreditCard, IconEye, IconPlus, IconTrash } from "@tabler/icons-react";
+import {
+  IconBan,
+  IconCircleCheck,
+  IconCreditCard,
+  IconEye,
+  IconPlus,
+  IconRefresh,
+  IconTrash,
+} from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type UserDetail, type UserListItem, UserStatus } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
@@ -287,6 +295,7 @@ export default function UsersPage() {
         }
       />
       <ListToolbar>
+        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => usersQuery.refetch()} />
         <SearchInput value={search} onChange={setSearch} placeholder="搜索用户 / 套餐" />
       </ListToolbar>
       {usersQuery.isError ? (

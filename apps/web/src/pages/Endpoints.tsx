@@ -1,5 +1,5 @@
 import { Button, Table } from "@heroui/react";
-import { IconPencil, IconPlus, IconTrash } from "@tabler/icons-react";
+import { IconPencil, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type CreateEndpointInput, type Endpoint, type EndpointWithMeta, endpointAddress } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
@@ -169,6 +169,7 @@ export default function EndpointsPage() {
         }
       />
       <ListToolbar>
+        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => endpointsQuery.refetch()} />
         <SearchInput value={search} onChange={setSearch} placeholder="搜索端点 / 主机" />
       </ListToolbar>
       {endpointsQuery.isError ? (

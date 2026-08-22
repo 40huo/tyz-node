@@ -1,4 +1,5 @@
 import { ListBox, Select, Table } from "@heroui/react";
+import { IconRefresh } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../api";
@@ -7,6 +8,7 @@ import {
   DataText,
   emptyState,
   FilterTabs,
+  IconAction,
   ListToolbar,
   PageHeader,
   Pager,
@@ -107,6 +109,7 @@ export default function AuditPage() {
             </ListBox>
           </Select.Popover>
         </Select>
+        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => auditQuery.refetch()} />
         <SearchInput value={search} onChange={setSearch} placeholder="搜索操作者 / 详情" />
       </ListToolbar>
       {auditQuery.isError ? (
