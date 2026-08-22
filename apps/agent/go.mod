@@ -1,4 +1,4 @@
-module github.com/laoshan-tech/tyz-node/apps/agent
+module github.com/laoshan-tech/tyz/apps/agent
 
 go 1.26.3
 

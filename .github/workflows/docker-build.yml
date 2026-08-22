@@ -9,7 +9,10 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # Pinned on purpose: the repo was renamed (tyz-node -> tyz) but the published
+  # image keeps its established path so deployed nodes keep pulling updates.
+  # github.repository would now resolve to the new name.
+  IMAGE_NAME: laoshan-tech/tyz-node
 
 jobs:
   build:

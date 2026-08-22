@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/model"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/model"
 )
 
 // dialerType maps an internal transport to a GOST dialer/listener type.

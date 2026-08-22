@@ -23,14 +23,14 @@ import (
 	xlogger "github.com/go-gost/x/logger"
 	"github.com/go-gost/x/registry"
 
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/agentcfg"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/builder"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/certs"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/cp"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/gostapply"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/loop"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/model"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/statsobs"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/agentcfg"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/builder"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/certs"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/cp"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/gostapply"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/loop"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/model"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/statsobs"
 )
 
 // configCachePath is where the last applied config is persisted (working
