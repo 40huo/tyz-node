@@ -38,11 +38,11 @@ cleanup() {
 trap cleanup EXIT
 PIDS=""
 
-start_agent() { # name token health_port
+start_agent() { # name token gost_api_port — DEBUG exposes the GOST web api used as the readiness probe
   local name="$1" token="$2" port="$3"
   mkdir -p "$WORK/$name"
   (cd "$WORK/$name" && exec env CONTROL_PLANE_URL=http://localhost:8787 NODE_TOKEN="$token" \
-    PORT="$port" HOST=127.0.0.1 HOME="$WORK/$name" "$AGENT_BIN") >"$WORK/$name.log" 2>&1 &
+    DEBUG=true GOST_API_ADDR="127.0.0.1:$port" HOME="$WORK/$name" "$AGENT_BIN") >"$WORK/$name.log" 2>&1 &
   PIDS="$PIDS $!"
 }
 
@@ -66,15 +66,15 @@ wait_port_free() { # port
 echo "== cleaning up leftovers from previous runs =="
 pkill -x tyz-agent 2>/dev/null || true
 pkill -f "http.server 191[0-9][0-9]" 2>/dev/null || true
-for port in 18091 18092 16900 16901 16535 16548 16556 16557 16558 16559 26556 26557 19180 19181; do wait_port_free "$port"; done
+for port in 18081 18082 16900 16901 16535 16548 16556 16557 16558 16559 26556 26557 19180 19181; do wait_port_free "$port"; done
 
 echo "== starting local HTTP targets (19180/19181) =="
 start_target target-one 19180
 start_target target-two 19181
 
 echo "== starting exit agent (node-2, dev-token-2) and entry agent (node-1, dev-token-1) =="
-start_agent exit dev-token-2 18092
-start_agent entry dev-token-1 18091
+start_agent exit dev-token-2 18081
+start_agent entry dev-token-1 18082
 
 wait_http() { # url timeout_s
   local url="$1" timeout="$2" waited=0
@@ -87,9 +87,22 @@ wait_http() { # url timeout_s
   done
 }
 
+# The agent has no HTTP surface of its own — readiness is "the GOST debug api
+# answers AND the applied config carries services" (DEBUG=true above).
+wait_gost_config() { # gost_api_port timeout_s
+  local port="$1" timeout="$2" waited=0
+  until curl -sf -m 2 "http://127.0.0.1:$port/api/config" | grep -q '"service-'; do
+    sleep 0.5
+    waited=$((waited + 1))
+    if [ "$waited" -ge $((timeout * 2)) ]; then
+      return 1
+    fi
+  done
+}
+
 echo "== waiting for agents and listeners =="
-wait_http http://127.0.0.1:18092/healthz 20 || { FAILED=1; echo "FAIL: exit agent health"; tail -5 "$WORK/exit.log"; exit 1; }
-wait_http http://127.0.0.1:18091/healthz 20 || { FAILED=1; echo "FAIL: entry agent health"; tail -5 "$WORK/entry.log"; exit 1; }
+wait_gost_config 18081 20 || { FAILED=1; echo "FAIL: exit agent config"; tail -5 "$WORK/exit.log"; exit 1; }
+wait_gost_config 18082 20 || { FAILED=1; echo "FAIL: entry agent config"; tail -5 "$WORK/entry.log"; exit 1; }
 for port in 16535 16548 16556 16557 16558 16559; do
   wait_http "http://127.0.0.1:$port/" 20 || { FAILED=1; echo "FAIL: entry :$port not listening"; tail -20 "$WORK/entry.log"; exit 1; }
 done

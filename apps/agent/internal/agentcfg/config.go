@@ -13,10 +13,6 @@ import (
 )
 
 type Config struct {
-	// Health endpoint (GET /healthz).
-	Host string
-	Port int
-
 	ControlPlaneURL string
 	NodeToken       string
 
@@ -27,11 +23,15 @@ type Config struct {
 	WSProbeInterval time.Duration
 	WSPingInterval  time.Duration
 
-	// GostAPIAddr optionally exposes the embedded GOST Web API for debugging
-	// (e.g. "127.0.0.1:18080"). Empty by default.
-	GostAPIAddr string
-
+	// Debug enables verbose logging and starts the embedded GOST Web API
+	// (a read-write debug surface for inspecting the actually-applied GOST
+	// config). Test-only.
 	Debug bool
+
+	// GostAPIAddr is the GOST Web API listen address, effective only when
+	// Debug is on (e.g. "127.0.0.1:18080"; the main binary substitutes a
+	// default when empty). Configurable so a port conflict can be avoided.
+	GostAPIAddr string
 }
 
 // Load reads ./.env when present, then resolves configuration from env vars.
@@ -45,8 +45,6 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Host:               envStr("HOST", "127.0.0.1"),
-		Port:               envInt("PORT", 18090),
 		ControlPlaneURL:    strings.TrimRight(os.Getenv("CONTROL_PLANE_URL"), "/"),
 		NodeToken:          os.Getenv("NODE_TOKEN"),
 		PollInterval:       time.Duration(envInt("POLL_INTERVAL_MS", 10000)) * time.Millisecond,
@@ -54,8 +52,8 @@ func Load() (*Config, error) {
 		WSenabled:          strings.ToLower(os.Getenv("WS_ENABLED")) != "false",
 		WSProbeInterval:    time.Duration(envInt("WS_PROBE_INTERVAL_MS", 60000)) * time.Millisecond,
 		WSPingInterval:     time.Duration(envInt("WS_PING_INTERVAL_MS", 60000)) * time.Millisecond,
-		GostAPIAddr:        os.Getenv("GOST_API_ADDR"),
 		Debug:              os.Getenv("DEBUG") == "true",
+		GostAPIAddr:        os.Getenv("GOST_API_ADDR"),
 	}
 
 	intervalKeys := []struct {
@@ -102,13 +100,6 @@ func loadDotEnv(path string) {
 			}
 		}
 	}
-}
-
-func envStr(name, fallback string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return fallback
 }
 
 // envInt parses an integer env var. A set-but-malformed value is an ERROR,

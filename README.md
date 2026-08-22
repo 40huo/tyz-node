@@ -47,7 +47,7 @@ bun run dev:server                    # wrangler dev
 # 2. 管理面板（端口 5173，/admin 等代理到 8787）
 bun run dev:web
 
-# 3. 节点 agent（端口 18090，GOST 已内嵌，无需单独安装）
+# 3. 节点 agent（GOST 已内嵌，无需单独安装；无自有 HTTP 端口）
 CONTROL_PLANE_URL=http://localhost:8787 NODE_TOKEN=dev-token-1 bun run dev:agent
 
 # 4. agent 测试（golden 配置生成 / WS 状态机 / 应用生命周期）

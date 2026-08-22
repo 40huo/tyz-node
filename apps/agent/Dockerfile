@@ -34,7 +34,5 @@ ENV HOME=/var/lib/tyz
 
 COPY --from=build /out/tyz-agent /usr/local/bin/tyz-agent
 
-EXPOSE 18090
-
 # Exec form so SIGTERM reaches the agent directly
 ENTRYPOINT ["tyz-agent"]
