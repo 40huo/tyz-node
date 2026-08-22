@@ -1,5 +1,5 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
+  "$schema": "apps/server/node_modules/wrangler/config-schema.json",
   "name": "tyz-server",
   "main": "apps/server/src/index.ts",
   "compatibility_date": "2025-06-01",
