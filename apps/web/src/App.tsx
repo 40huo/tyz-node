@@ -31,6 +31,7 @@ import PackagesPage from "./pages/Packages";
 import ProfilePage from "./pages/Profile";
 import RulesPage from "./pages/Rules";
 import SettingsPage from "./pages/Settings";
+import SetupPage from "./pages/Setup";
 import TunnelsPage from "./pages/Tunnels";
 import UsersPage from "./pages/Users";
 import { useTheme } from "./theme";
@@ -407,7 +408,7 @@ export default function App() {
   const location = useLocation();
 
   const redirectToLogin = useCallback(() => {
-    if (!location.pathname.startsWith("/login")) {
+    if (!location.pathname.startsWith("/login") && !location.pathname.startsWith("/setup")) {
       navigate("/login");
     }
   }, [location.pathname, navigate]);
@@ -416,6 +417,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/setup" element={<SetupPage />} />
       <Route path="/" element={<AppLayout />}>
         <Route index element={<DashboardPage />} />
         <Route path="nodes" element={<NodesPage />} />

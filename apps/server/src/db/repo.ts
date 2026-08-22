@@ -30,7 +30,7 @@ type NodeRow = typeof relayNodes.$inferSelect;
 export type TunnelRow = typeof tunnels.$inferSelect;
 type RuleRow = typeof relayRules.$inferSelect;
 
-export function toRelayNode<T extends Omit<NodeRow, "token_hash" | "tls_config" | "token_hint">>(row: T): RelayNode {
+export function toRelayNode<T extends Omit<NodeRow, "token" | "tls_config" | "token_hint">>(row: T): RelayNode {
   return {
     ...row,
     description: opt(row.description),
@@ -77,8 +77,9 @@ export function toRelayRule(row: RuleRow): RelayRule {
 
 /**
  * Columns of relay_nodes that map onto the public RelayNode entity.
- * NEVER select token_hash/tls_config into API responses — the old row mappers
- * were an implicit allowlist; this explicit column list replaces them.
+ * NEVER select token/tls_config here — this list feeds BOTH admin responses and
+ * the agent config snapshot (config_json); the token is revealed only through
+ * the dedicated GET /nodes/:id/token endpoint.
  */
 export const nodeEntityColumns = {
   id: relayNodes.id,

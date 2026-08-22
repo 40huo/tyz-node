@@ -4,7 +4,7 @@ import { sql } from "drizzle-orm";
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
- * Drizzle schema mirroring migrations/0001_init.sql exactly.
+ * Drizzle schema mirroring migrations/ (0001 baseline + subsequent files) exactly.
  *
  * Property names deliberately keep the DB's snake_case (matching the entity
  * types in @tyz/shared) so query results satisfy the API shapes without a
@@ -20,9 +20,13 @@ export const relayNodes = sqliteTable("relay_nodes", {
   description: text("description"),
   address: text("address").notNull(),
   display_address: text("display_address"),
-  /** sha256(TOKEN_SALT + token), hex; the raw token is only shown once at creation. */
-  token_hash: text("token_hash").notNull().unique(),
-  /** Last 4 chars of the token, for display. */
+  /**
+   * Plaintext node token (the panel is the trust domain; rotate on suspicion).
+   * NOT NULL + UNIQUE carried over from the pre-0003 hash column — rows created
+   * before 0003 may still hold an inert legacy sha256 string until rotated.
+   */
+  token: text("token").notNull().unique(),
+  /** Last 4 chars of the token, for masked display. */
   token_hint: text("token_hint").notNull().default(""),
   level: integer("level").notNull().default(0),
   is_public: integer("is_public", { mode: "boolean" }).notNull().default(false),
@@ -183,6 +187,12 @@ export const users = sqliteTable("users", {
   name: text("name").notNull(),
   note: text("note"),
   status: text("status").$type<UserStatus>().notNull().default(UserStatus.ACTIVE),
+  // role='admin' rows are platform operators (created via /setup); 'user' rows are the
+  // panel's business tenants. password_hash is login material — it must never leak
+  // into API responses or audit rows (stricter than relay_nodes.token, which
+  // the panel may reveal on demand).
+  role: text("role").$type<"admin" | "user">().notNull().default("user"),
+  password_hash: text("password_hash"),
   created_at: text("created_at").notNull().default(createdAt),
   updated_at: text("updated_at").notNull().default(createdAt),
 });

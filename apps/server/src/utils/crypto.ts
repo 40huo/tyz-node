@@ -27,12 +27,26 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/** `sha256(salt:node:token)` with a salt, `sha256(node:token)` without — tokens are high-entropy either way. */
-export function hashNodeToken(salt: string | undefined, token: string): Promise<string> {
-  return sha256Hex(salt ? `${salt}:node:${token}` : `node:${token}`);
+export function randomHex(bytes: number): string {
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  return [...buf].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Legacy hash scheme for ADMIN_PASSWORD_SHA256 (kept for deployments created before ADMIN_PASSWORD existed). */
-export function hashAdminPassword(salt: string, password: string): Promise<string> {
-  return sha256Hex(`${salt}:admin:${password}`);
+/**
+ * Salted single-step SHA-256 for user passwords, stored as
+ * `sha256$<salthex>$<hashhex>` in users.password_hash. The scheme prefix keeps
+ * the format self-describing so a stronger KDF can replace it later without a
+ * data migration. Known trade-off: fast to brute-force offline if the DB leaks
+ * — relies on strong passwords (accepted for this single-panel admin model).
+ */
+export async function hashPassword(password: string): Promise<string> {
+  const salt = randomHex(16);
+  return `sha256$${salt}$${await sha256Hex(`${salt}:password:${password}`)}`;
+}
+
+export async function verifyPasswordHash(stored: string, password: string): Promise<boolean> {
+  const [scheme, salt, hash] = stored.split("$");
+  if (scheme !== "sha256" || !salt || !hash) return false;
+  return timingSafeEqual(await sha256Hex(`${salt}:password:${password}`), hash);
 }

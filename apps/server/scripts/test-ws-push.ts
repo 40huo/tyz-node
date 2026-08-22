@@ -5,7 +5,8 @@
  *   bun run scripts/test-ws-push.ts [baseUrl]
  *
  * Env: NODE_TOKEN (default "dev-token-1", the seed token), ADMIN_USER/ADMIN_PASS
- * (default admin/admin123 for local .dev.vars).
+ * (default admin/admin123 — created through /api/setup when the instance is
+ * still uninitialized, mirroring the first-run wizard).
  *
  * Verifies: bad token rejected; hello on connect; ping/pong keepalive;
  * an admin write broadcasts {"type":"config_changed"} to the node's socket.
@@ -47,7 +48,22 @@ async function main(): Promise<void> {
     logger.info("PASS: invalid token rejected");
   }
 
-  // 2. Login and open the channel with the seed token.
+  // 2. Login and open the channel with the seed token. Fresh local databases
+  //    have no admin yet — bootstrap one through the setup wizard endpoint.
+  const statusResponse = await fetch(`${baseUrl}/api/setup/status`);
+  if (!statusResponse.ok) fail(`setup status failed: ${statusResponse.status}`);
+  const status = (await statusResponse.json()) as { initialized: boolean };
+  if (!status.initialized) {
+    const setupResponse = await fetch(`${baseUrl}/api/setup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: adminUser, password: adminPass }),
+    });
+    if (!setupResponse.ok && setupResponse.status !== 409) {
+      fail(`setup bootstrap failed: ${setupResponse.status}`);
+    }
+    logger.info(`PASS: admin bootstrapped via /api/setup (user ${adminUser})`);
+  }
   const loginResponse = await fetch(`${baseUrl}/api/admin/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

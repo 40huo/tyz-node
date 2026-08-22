@@ -224,7 +224,7 @@ function TokenDialog({ token, onClose }: { token: string | null; onClose: () => 
     <FormModal title="节点令牌" isOpen={token !== null} onClose={onClose}>
       {token !== null && (
         <>
-          <p className="text-sm text-warning">令牌仅此一次完整显示，请立即保存：</p>
+          <p className="text-sm text-muted">新令牌已生效，可随时在节点详情中查看：</p>
           <div className="mt-2 flex items-start gap-2">
             <Mono className="flex-1 break-all text-sm leading-5">{token}</Mono>
             <Button
@@ -242,6 +242,65 @@ function TokenDialog({ token, onClose }: { token: string | null; onClose: () => 
         </>
       )}
     </FormModal>
+  );
+}
+
+// ---- Token reveal row (drawer) ----
+
+/** 节点令牌常驻脱敏展示：默认只露尾 4 位，点“显示”拉取完整令牌，可复制可隐藏。 */
+function TokenField({ nodeId, tokenHint }: { nodeId: number; tokenHint: string }) {
+  const [token, setToken] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const reveal = async () => {
+    setPending(true);
+    try {
+      const res = await api.nodeToken(nodeId);
+      setToken(res.token);
+    } catch (error) {
+      fail(error);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      {token === null ? (
+        <>
+          <Mono className="flex-1">•••• {tokenHint || "????"}</Mono>
+          <Button variant="tertiary" size="sm" isPending={pending} onPress={reveal}>
+            显示
+          </Button>
+        </>
+      ) : (
+        <>
+          <Mono className="flex-1 break-all text-sm leading-5">{token}</Mono>
+          <Button
+            isIconOnly
+            variant="tertiary"
+            size="sm"
+            aria-label="复制令牌"
+            onPress={() => {
+              navigator.clipboard.writeText(token).then(() => setCopied(true));
+            }}
+          >
+            {copied ? <IconCheck size={16} /> : <IconCopy size={16} />}
+          </Button>
+          <Button
+            variant="tertiary"
+            size="sm"
+            onPress={() => {
+              setToken(null);
+              setCopied(false);
+            }}
+          >
+            隐藏
+          </Button>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -281,6 +340,10 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
   return (
     <SideDrawer title={`节点统计 #${node.id} · ${node.name}`} isOpen onClose={onClose}>
       <div className="flex flex-col gap-6">
+        <section>
+          <h3 className="mb-2 text-sm font-medium">节点令牌</h3>
+          <TokenField nodeId={node.id} tokenHint={node.token_hint} />
+        </section>
         <section>
           <h3 className="mb-2 text-sm font-medium">
             服务健康
@@ -498,7 +561,7 @@ export default function NodesPage() {
                         <RowButton onPress={() => setEditing(n)}>编辑</RowButton>
                         <RowButton
                           onPress={() =>
-                            confirmDanger("轮换令牌", "旧令牌立即失效，新令牌仅显示一次，确定？", () =>
+                            confirmDanger("轮换令牌", "旧令牌立即失效，节点机需同步更新 .env 并重启，确定？", () =>
                               rotateMutation.mutate(n.id),
                             )
                           }
