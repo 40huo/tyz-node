@@ -44,9 +44,21 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=nightly,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+
+      # Version stamped into the embedded agent binary: the release tag on
+      # releases, "nightly" on master pushes (rolling, no hash).
+      - name: Compute agent version
+        id: agentver
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=nightly" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -57,6 +69,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.agentver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
