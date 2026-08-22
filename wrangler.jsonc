@@ -1,6 +1,6 @@
 {
-  "$schema": "apps/server/node_modules/wrangler/config-schema.json",
-  "name": "tyz-server",
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tyz-node",
   "main": "apps/server/src/index.ts",
   "compatibility_date": "2025-06-01",
   "assets": {

@@ -101,8 +101,8 @@
 
 | 想改什么 | 改哪里 | 说明 |
 |---|---|---|
-| Worker 名 | `apps/server/wrangler.jsonc` 的 `name`（默认 `tyz-server`） | Dashboard 里创建的 Worker 名必须与它一致（见 3.3 的告警） |
-| D1 数据库名 | `apps/server/wrangler.jsonc` 的 `database_name`（默认 `tyz`） | 首次部署自动创建同名数据库；不需要填任何资源 ID |
+| Worker 名 | 根目录 `wrangler.jsonc` 的 `name`（默认 `tyz-server`） | Dashboard 里创建的 Worker 名必须与它一致（见 3.3 的告警） |
+| D1 数据库名 | 根目录 `wrangler.jsonc` 的 `database_name`（默认 `tyz`） | 首次部署自动创建同名数据库；不需要填任何资源 ID |
 | 面板标题等 | `apps/web/` 源码 | 改完随下次部署自动生效 |
 
 **③ 接入 Workers Builds**：**Workers & Pages → Create → Worker → 连接 Git 仓库**，选择**你 fork 的仓库**与 `master` 分支，Worker 名保持 `tyz-server`（与 `wrangler.jsonc` 的 `name` 一致）。wrangler 配置就在**仓库根目录**，因此 Root directory、Deploy command、构建变量都用默认——唯一要手动填的是：
@@ -143,7 +143,7 @@ Workers Builds 的行为：push 到生产分支 → 跑**构建命令**（可选
 |---|---|---|
 | Root directory | 默认（仓库根） | wrangler.jsonc 就在仓库根目录，无需设置 |
 | Build command | `bun run build:web` | 构建面板到 `apps/web/dist`（Worker Assets 托管该目录）；依赖已由自动安装步骤在根目录装好 |
-| Deploy command | 默认（`npx wrangler deploy`） | 首次部署自动创建 D1（见 3.7）。要连迁移一起自动化可改 `npm run deploy:server`（需 token 有 D1 权限，见 3.7） |
+| Deploy command | 默认（`npx wrangler deploy`） | 首次部署自动创建 D1（见 3.7）。要连迁移一起自动化可改 `bun run deploy:server`（需 token 有 D1 权限，见 3.7） |
 | 非生产分支构建 | 保持关闭 | 本 Worker 含 Durable Object，**不生成预览 URL**，预览版上传（`wrangler versions upload`）没有意义，徒增版本噪音 |
 
 其他事实（无需操作，知道即可）：
@@ -185,7 +185,7 @@ git push origin master
 
 在 Worker → **Deployments / Builds** 页面观察构建日志。首次部署时 wrangler 会自动创建 D1 数据库 `tyz`（见 3.7）。
 
-**默认 Deploy command 只部署不迁移**，首次部署完成后需本地执行一次（若 Deploy command 用了 `npm run deploy:server` 则已包含，跳过）：
+**默认 Deploy command 只部署不迁移**，首次部署完成后需本地执行一次（若 Deploy command 用了 `bun run deploy:server` 则已包含，跳过）：
 
 ```bash
 bunx wrangler login     # 首次需 OAuth 授权
@@ -212,7 +212,7 @@ curl https://tyz.example.com/api/healthz        # → {"ok":true}
   bunx wrangler d1 migrations apply DB --remote
   ```
 
-- **全自动**：把 Deploy command 改为 `npm run deploy:server`（即根 `package.json` 里的 `wrangler deploy && npm run db:migrate`）。顺序是**先部署后迁移**：首次部署时数据库由部署动作创建，迁移必须在它之后才能执行；日常发布保持迁移增量向后兼容（加表/加列），部署与迁移之间几秒的窗口不影响在线版本。前提：到 **My Profile → API Tokens** 给 Workers Builds 所用的 token 追加 **D1:Edit**（自动创建的 token 默认不含 D1 编辑权限，不加会报 403）。
+- **全自动**：把 Deploy command 改为 `bun run deploy:server`（即根 `package.json` 里的 `wrangler deploy && bun run db:migrate`；前端构建由 Build command 完成，脚本不重复构建）。顺序是**先部署后迁移**：首次部署时数据库由部署动作创建，迁移必须在它之后才能执行；日常发布保持迁移增量向后兼容（加表/加列），部署与迁移之间几秒的窗口不影响在线版本。前提：到 **My Profile → API Tokens** 给 Workers Builds 所用的 token 追加 **D1:Edit**（自动创建的 token 默认不含 D1 编辑权限，不加会报 403）。注意：本地手动执行 `bun run deploy:server` 前需先 `bun run build:web`（否则部署的是上次构建的旧产物），CF 流水线无此问题。
 
 ### 3.8 与仓库自带 GitHub Actions 的关系
 

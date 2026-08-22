@@ -1,5 +1,5 @@
 -- Local development seed data (run against the LOCAL D1 only):
---   cd apps/server && bunx wrangler d1 execute DB --local --file scripts/seed-local.sql
+--   bun run db:seed:local    # at the repo root (= wrangler d1 execute DB --local --file apps/server/scripts/seed-local.sql)
 --
 -- Seeded node tokens use TOKEN_SALT=dev-token-salt:
 --   node-1 -> dev-token-1  sha256("dev-token-salt:node:dev-token-1")
