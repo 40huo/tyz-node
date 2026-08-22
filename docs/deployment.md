@@ -6,7 +6,7 @@
 - **管理面板**（`apps/web`）：随控制面一起部署（构建产物由 Worker Assets 托管，无需单独部署）;
 - **节点机 agent**（`apps/agent`，Go 单二进制、内嵌 GOST 运行时）：每台中继机器一个容器（host 网络）。
 
-仓库对公共部署友好：`wrangler.jsonc` **不携带任何账户相关的资源 ID**（D1 由 wrangler 自动资源供给创建并按名称保持绑定），secrets 只需**管理员用户名 + 密码**两个。
+仓库对公共部署友好：`wrangler.jsonc` **不携带任何账户相关的资源 ID**（D1 由 wrangler 自动资源供给创建并按名称保持绑定），**零 secrets 即可运行**——管理员账号在首次打开面板时经 `/setup` 向导创建（存于数据库），本地无需安装任何工具。
 
 首次部署路线图：
 
@@ -22,7 +22,7 @@
 
 ```
 ┌────────────────────────── Cloudflare ──────────────────────────┐
-│  Worker: tyz-server (Hono)                                     │
+│  Worker: tyz-node (Hono)                                     │
 │   ├─ /api/admin/* 管理面板 API + 静态托管 (React SPA)             │
 │   ├─ /api/agent/* 节点 API（Bearer NODE_TOKEN 认证）              │
 │   │            /api/agent/ws WebSocket 推送（NodePushDO）          │
@@ -44,7 +44,7 @@
 
 | 单元 | 位置 | 职责 |
 |---|---|---|
-| Worker `tyz-server` | Cloudflare 边缘 | 面板 API + SPA 托管、agent 配置下发（WS 推送优先）、统计接收、配额/续期巡检 |
+| Worker `tyz-node` | Cloudflare 边缘 | 面板 API + SPA 托管、agent 配置下发（WS 推送优先）、统计接收、配额/续期巡检 |
 | D1 数据库 `tyz` | Cloudflare | 全部业务数据（含计费台账 `traffic_hourly`，永不清理） |
 | `NodePushDO`（Durable Object） | 随 Worker | 每节点一个实例，WebSocket 休眠推送 |
 | agent 容器 | 每台节点机 | 内嵌 GOST 数据面：监听入口端口、转发/中继流量、执行限速与配额 |
@@ -58,7 +58,7 @@
 | 项 | 要求 |
 |---|---|
 | Cloudflare 账号 | 免费计划即可运行（D1 / DO / Workers Builds 均可用）；生产环境建议 Workers Paid，避免免费计划的每日请求/构建额度限制 |
-| 本机 | `git`、Bun ≥ 1.2（仓库 devDependency 里的 wrangler 4 通过 `bunx` 使用） |
+| 本机 | 无硬性要求——部署与初始化全程在 Cloudflare 上完成（可选：Bun ≥ 1.2 + 仓库 devDependency 里的 wrangler 用于本地开发与 D1 备份导出） |
 | 节点机 | Linux x86_64 或 arm64，Docker Engine + compose 插件 |
 | 仓库 | 已推送到 GitHub（Workers Builds 从仓库拉取构建；`bun.lock` 已入库，CI 安装走 frozen 模式） |
 
@@ -101,31 +101,24 @@
 
 | 想改什么 | 改哪里 | 说明 |
 |---|---|---|
-| Worker 名 | 根目录 `wrangler.jsonc` 的 `name`（默认 `tyz-server`） | Dashboard 里创建的 Worker 名必须与它一致（见 3.3 的告警） |
+| Worker 名 | 根目录 `wrangler.jsonc` 的 `name`（默认 `tyz-node`） | Dashboard 里创建的 Worker 名必须与它一致（见 3.3 的告警） |
 | D1 数据库名 | 根目录 `wrangler.jsonc` 的 `database_name`（默认 `tyz`） | 首次部署自动创建同名数据库；不需要填任何资源 ID |
 | 面板标题等 | `apps/web/` 源码 | 改完随下次部署自动生效 |
 
-**③ 接入 Workers Builds**：**Workers & Pages → Create → Worker → 连接 Git 仓库**，选择**你 fork 的仓库**与 `master` 分支，Worker 名保持 `tyz-server`（与 `wrangler.jsonc` 的 `name` 一致）。wrangler 配置就在**仓库根目录**，因此 Root directory、Deploy command、构建变量都用默认——唯一要手动填的是：
+**③ 接入 Workers Builds**：**Workers & Pages → Create → Worker → 连接 Git 仓库**，选择**你 fork 的仓库**与 `master` 分支，Worker 名保持 `tyz-node`（与 `wrangler.jsonc` 的 `name` 一致）。wrangler 配置就在**仓库根目录**，因此 Root directory 与构建变量都用默认，**需要手动填的是以下两项**：
 
-| 设置 | 值 |
-|---|---|
-| Build command | `bun run build:web` |
+| 设置 | 值 | 说明 |
+|---|---|---|
+| Build command | `bun run build:web` | 构建面板到 `apps/web/dist`（Worker Assets 托管该目录） |
+| Deploy command | `bun run deploy:server` | 部署 + 自动应用 D1 迁移（首次部署自动建库建表） |
 
-> 构建命令**不会被自动预填**（自动预填是 Deploy 按钮流程专属；手动连接只做框架探测，本仓库根目录探测不到框架），手动填这一条即可。依赖安装由 Cloudflare 的自动安装步骤在仓库根完成（`bun install`，workspace 正常解析），无需自己装也无需任何构建变量。
+> **这两项都不会被自动识别/预填**——自动预填是 Deploy 按钮流程专属；手动连接只做框架探测，monorepo 仓库根探测不到框架，必须手动输入。依赖安装由 Cloudflare 的自动安装步骤在仓库根完成（`bun install`，workspace 正常解析），无需自己装也无需任何构建变量。
 
-**④ 填 secrets**（见 3.4）：`ADMIN_USERNAME` + `ADMIN_PASSWORD` 两个即可。**首次部署前没配也不影响部署**——部署完成后随时在 Settings → Variables and Secrets 里补配，保存即生效（无需重新构建），之后就能登录。
+**④ 触发部署**：连接保存后即触发首次构建部署——建库、建表全部自动完成，本地无需执行任何命令。
 
-**⑤ 触发部署**：连接保存后即触发首次构建部署。默认 Deploy command 不含迁移，首次部署完成后本地执行一次：
+**⑤ 跟进上游更新**：GitHub fork 页面点 **Sync fork**（或 `git pull upstream master && git push`）→ push 自动触发重新部署；迁移随部署命令自动应用，无需本地操作。
 
-```bash
-git clone https://github.com/<你的账户>/tyz-node && cd tyz-node
-bunx wrangler login     # OAuth 授权
-bun run db:migrate      # = wrangler d1 migrations apply DB --remote
-```
-
-**⑥ 跟进上游更新**：GitHub fork 页面点 **Sync fork**（或 `git pull upstream master && git push`）→ push 自动触发重新部署；若上游发布包含新的 `migrations/*.sql`，按 3.7 在本地补跑一次迁移。
-
-部署完成后进入第 4 节初始化面板。
+部署完成后打开面板地址，按向导创建管理员账号（见 3.4），然后进入第 4 节初始化面板。
 
 > 建议：在 fork 的 **Settings → Actions** 中禁用 `deploy-server.yml`（fork 里没有 `CLOUDFLARE_*` secrets，跑了也会失败，还可能与 Workers Builds 形成双部署通道）。
 
@@ -135,7 +128,7 @@ Workers Builds 的行为：push 到生产分支 → 跑**构建命令**（可选
 
 在 Cloudflare Dashboard：**Workers & Pages → Create → Worker**，选择**连接 Git 仓库**（而非 Hello World 模板），选择本仓库与生产分支 `master`。
 
-> ⚠️ **Worker 名字必须与 `wrangler.jsonc` 的 `name` 一致：`tyz-server`**。不一致是接入失败的常见原因（构建报错找不到/名字冲突）。
+> ⚠️ **Worker 名字必须与 `wrangler.jsonc` 的 `name` 一致：`tyz-node`**。不一致是接入失败的常见原因（构建报错找不到/名字冲突）。
 
 然后在 Worker 的 **Settings → Build** 按下表配置：
 
@@ -143,7 +136,7 @@ Workers Builds 的行为：push 到生产分支 → 跑**构建命令**（可选
 |---|---|---|
 | Root directory | 默认（仓库根） | wrangler.jsonc 就在仓库根目录，无需设置 |
 | Build command | `bun run build:web` | 构建面板到 `apps/web/dist`（Worker Assets 托管该目录）；依赖已由自动安装步骤在根目录装好 |
-| Deploy command | 默认（`npx wrangler deploy`） | 首次部署自动创建 D1（见 3.7）。要连迁移一起自动化可改 `bun run deploy:server`（需 token 有 D1 权限，见 3.7） |
+| Deploy command | `bun run deploy:server` | 部署 + 自动应用 D1 迁移（首次部署自动建库建表，见 3.7）。**Build 与 Deploy 两个命令都不会被自动识别，必须手动输入**（自动预填是 Deploy 按钮流程专属；手动连接只做框架探测，monorepo 仓库根探测不到框架） |
 | 非生产分支构建 | 保持关闭 | 本 Worker 含 Durable Object，**不生成预览 URL**，预览版上传（`wrangler versions upload`）没有意义，徒增版本噪音 |
 
 其他事实（无需操作，知道即可）：
@@ -152,26 +145,19 @@ Workers Builds 的行为：push 到生产分支 → 跑**构建命令**（可选
 - 首次部署会自动生效 `wrangler.jsonc` 里的其余声明：Durable Object 绑定（`NodePushDO`，SQLite 类，迁移标签 `v2_node_push_do`）、每日 Cron（`0 3 * * *`，03:00 UTC）、Assets 绑定与 observability；并**自动创建 D1 数据库**（自动资源供给，见 3.7）。
 - **不建议配置 build watch paths**：默认每次 push 都构建（本机构建很快）；若配置了监听路径而漏掉根目录 `bun.lock` / `package.json`，依赖变更提交将不触发部署。
 
-### 3.4 配置 secrets（必填仅 2 个）
+### 3.4 管理员账号（/setup 向导，零 secrets）
 
-Worker → **Settings → Variables and Secrets → Add**，类型选 **Secret**（或本地 `bunx wrangler secret put <NAME>`，效果相同）。**随时可配**——首次部署前没配也能正常部署，事后补配保存即生效，无需重新构建；未配置时登录面板会直接弹出指引（接口返回 503 + 配置方法），不会再出现令人困惑的"密码错误"：
+**无需配置任何 secrets**。首次部署完成后打开面板地址，会自动引导进入 `/setup` 初始化页：设置管理员用户名（3-32 位字母/数字/下划线/连字符）与密码（≥8 位），提交即创建账号并直接进入面板。管理员账号存于数据库 `users` 表（`role='admin'`），密码以盐化哈希存储；向导仅在没有任何管理员时可用（重复访问提示直接登录）。
 
-| Secret | 必填 | 值 |
-|---|---|---|
-| `ADMIN_USERNAME` | ✅ | 管理员用户名，如 `admin` |
-| `ADMIN_PASSWORD` | ✅ | 管理员登录密码（明文存于 Worker secret，仅服务端可见，登录时恒时比对） |
-
-可选 secrets（一般不需要）：
+可选 secrets（一般不需要；本地 `bunx wrangler secret put <NAME>` 效果相同）：
 
 | Secret | 作用 | 未设置时的行为 |
 |---|---|---|
-| `SESSION_SECRET` | 会话 cookie 的 HMAC 密钥 | 由管理员凭据派生——改密码会使所有已登录会话失效一次 |
-| `TOKEN_SALT` | 节点 token 哈希加盐 | 用无盐哈希（节点 token 本身是 128 位随机数，无盐已足够安全）。**一旦设置不可再更改/移除**，否则全部节点 token 立即失效 |
-| `ADMIN_PASSWORD_SHA256` | 旧式登录（预哈希密码），需与 `TOKEN_SALT` 配对 | 仅当 `ADMIN_PASSWORD` 未设置时生效，供存量部署平滑保留；新部署直接用 `ADMIN_PASSWORD` |
+| `SESSION_SECRET` | 会话 cookie 的 HMAC 密钥 | 使用 /setup 向导生成的随机密钥（存于 `app_settings`，与管理员密码无关） |
 
 ### 3.5 绑定域名（推荐）
 
-- 默认可用 `https://tyz-server.<你的子域>.workers.dev`。注意 workers.dev 在部分地区/线路可达性不稳，而**节点机必须稳定访问控制面**（WS 长连接 + 配置拉取），隧道类业务建议绑定自定义域名。
+- 默认可用 `https://tyz-node.<你的子域>.workers.dev`。注意 workers.dev 在部分地区/线路可达性不稳，而**节点机必须稳定访问控制面**（WS 长连接 + 配置拉取），隧道类业务建议绑定自定义域名。
 - 绑定方式：Worker → **Settings → Domains & Routes → Add → Custom domain**，域名需是本账号 Cloudflare Zone 内的 DNS 记录（自动签发边缘证书，无需自己管 TLS）。
 - 绑定自定义域名后，可选在 `wrangler.jsonc` 加 `"workers_dev": false` 关闭 workers.dev 入口，收敛暴露面。
 
@@ -183,14 +169,7 @@ Worker → **Settings → Variables and Secrets → Add**，类型选 **Secret**
 git push origin master
 ```
 
-在 Worker → **Deployments / Builds** 页面观察构建日志。首次部署时 wrangler 会自动创建 D1 数据库 `tyz`（见 3.7）。
-
-**默认 Deploy command 只部署不迁移**，首次部署完成后需本地执行一次（若 Deploy command 用了 `bun run deploy:server` 则已包含，跳过）：
-
-```bash
-bunx wrangler login     # 首次需 OAuth 授权
-bun run db:migrate      # 在仓库根执行
-```
+在 Worker → **Deployments / Builds** 页面观察构建日志。首次部署时 wrangler 会自动创建 D1 数据库 `tyz` 并应用全部迁移（见 3.7）。
 
 验证：
 
@@ -198,21 +177,13 @@ bun run db:migrate      # 在仓库根执行
 curl https://tyz.example.com/api/healthz        # → {"ok":true}
 ```
 
-浏览器打开 `https://tyz.example.com/`，用 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 登录管理面板。
+浏览器打开 `https://tyz.example.com/`，按 `/setup` 向导创建管理员账号（见 3.4）后直接进入管理面板。
 
 ### 3.7 D1 自动供给与迁移策略
 
 **自动供给（无需关心 database_id）**：`wrangler.jsonc` 的 D1 绑定故意不写 `database_id`（依赖 wrangler ≥ 4.45 的自动资源供给）。首次 `wrangler deploy` 会在账户上创建 `database_name` 声明的数据库（默认 `tyz`，已存在同名则直接按名称关联），此后每次部署都按名称维持绑定——**仓库里永远不出现账户相关的 ID**，公共仓库与多人部署互不干扰。本地 `wrangler dev` 也会自动创建本地库。
 
-**迁移策略（二选一）**：
-
-- **默认（Deploy command 为默认的 `npx wrangler deploy`，不含迁移）**：发布包含新的 `migrations/*.sql` 时，在本地执行一次：
-
-  ```bash
-  bunx wrangler d1 migrations apply DB --remote
-  ```
-
-- **全自动**：把 Deploy command 改为 `bun run deploy:server`（即根 `package.json` 里的 `wrangler deploy && bun run db:migrate`；前端构建由 Build command 完成，脚本不重复构建）。顺序是**先部署后迁移**：首次部署时数据库由部署动作创建，迁移必须在它之后才能执行；日常发布保持迁移增量向后兼容（加表/加列），部署与迁移之间几秒的窗口不影响在线版本。前提：到 **My Profile → API Tokens** 给 Workers Builds 所用的 token 追加 **D1:Edit**（自动创建的 token 默认不含 D1 编辑权限，不加会报 403）。注意：本地手动执行 `bun run deploy:server` 前需先 `bun run build:web`（否则部署的是上次构建的旧产物），CF 流水线无此问题。
+**迁移全自动**：Deploy command 配置为 `bun run deploy:server`（即根 `package.json` 里的 `wrangler deploy && bun run db:migrate`；前端构建由 Build command 完成，脚本不重复构建）。顺序是**先部署后迁移**：首次部署时数据库由部署动作创建，迁移必须在它之后才能执行；日常发布保持迁移增量向后兼容（加表/加列），部署与迁移之间几秒的窗口不影响在线版本。**Workers Builds 默认创建的 token 即可完成建库与远端迁移**（2026-08 实测验证）；仅当关联的是接入前已存在的数据库且迁移报 403 时，才需要到 My Profile → API Tokens 给该 token 追加 D1:Edit。注意：本地手动执行 `bun run deploy:server` 前需先 `bun run build:web`（否则部署的是上次构建的旧产物），CF 流水线无此问题。
 
 ### 3.8 与仓库自带 GitHub Actions 的关系
 
@@ -246,7 +217,7 @@ git push origin master
 | ports | 端口区间，如 `16800-16999`（自动分配用，见 2.2） |
 | transport | 默认传输 |
 
-创建成功后**节点 Token 仅显示一次**，立即复制保存——它就是该节点机 `.env` 里的 `NODE_TOKEN`。泄露/遗忘都走「轮换 Token」（旧 token 立即失效，需同步更新节点机 `.env` 并重启容器）。
+创建成功后即可看到节点 Token——它就是该节点机 `.env` 里的 `NODE_TOKEN`。面板中令牌**常驻脱敏展示**（仅露尾 4 位，节点详情里可点「显示」查看完整值并复制）。泄露处置走「轮换 Token」（旧 token 立即失效，需同步更新节点机 `.env` 并重启容器）。
 
 ### 4.2 端点（Endpoints，可选）
 
@@ -485,7 +456,7 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql   # 仓库�
 |---|---|---|
 | 重启规则 | 规则页 → 重启 | 只重建该规则的 GOST 服务（两端），断该规则连接，不改配置 |
 | 重算配置 | 节点页 → 重算 | 强制重聚合该节点配置并推送（排障用） |
-| 轮换节点 token | 节点页 → 轮换 | **旧 token 立即失效**；新 token 仅显示一次，需同步更新节点机 `.env` 并重启容器 |
+| 轮换节点 token | 节点页 → 轮换 | **旧 token 立即失效**；新 token 随弹窗展示并常驻详情页，需同步更新节点机 `.env` 并重启容器 |
 | 用户换购/续订 | 用户页 → 订阅 | 用量窗口重置（清零） |
 
 ### 7.5 监控建议
@@ -498,8 +469,7 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql   # 仓库�
 
 ## 8. 安全清单
 
-- [ ] secrets（`ADMIN_USERNAME` / `ADMIN_PASSWORD`，及可选的 `SESSION_SECRET` / `TOKEN_SALT`）只存 Worker secret，不进仓库/CI 变量
-- [ ] 若启用了可选 `SESSION_SECRET` / `TOKEN_SALT`，妥善备份；`TOKEN_SALT` 启用后不可再更改或移除（会使全部节点 token 失效）
+- [ ] 可选 secret（`SESSION_SECRET`）只存 Worker secret，不进仓库/CI 变量；管理员账号经 /setup 向导存于数据库
 - [ ] 管理员密码为强密码（单账户体系，无 2FA，必要时在前面加 Cloudflare Access）
 - [ ] 节点 token 泄露立即走「轮换」（旧 token 立即失效）
 - [ ] 节点机防火墙只放行：客户端接入端口、链路端口、出站 443（agent 无自有 HTTP 端口）
@@ -509,7 +479,7 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql   # 仓库�
 
 敏感数据流向（已由代码保证，供审计对照）：
 
-- 节点 token 只存盐化 SHA-256，原文仅在创建/轮换时显示一次；
+- 节点 token 明文存于数据库（面板是信任域，低敏凭据），面板脱敏展示、按需揭示，泄露处置 = 轮换；
 - 链路 TLS 的 PEM 与 relay 凭据**只**经 agent 配置通道下发，从不出现在面板响应与审计日志中；
 - `audit_log` 不记录任何 secret（token 轮换只记录动作不记录值）。
 
@@ -521,7 +491,7 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql   # 仓库�
 
 | 症状 | 原因 | 处置 |
 |---|---|---|
-| 构建报 Worker 名不匹配 / 找不到 wrangler 配置 | Dashboard 的 Worker 名 ≠ `tyz-server`（配置在仓库根 `wrangler.jsonc`） | 名字改为 `tyz-server`（Settings → Build） |
+| 构建报 Worker 名不匹配 / 找不到 wrangler 配置 | Dashboard 的 Worker 名 ≠ `tyz-node`（配置在仓库根 `wrangler.jsonc`） | 名字改为 `tyz-node`（Settings → Build） |
 | 部署命令里跑迁移报 403/权限错误 | Workers Builds 的 token 无 D1:Edit | 见 3.7：本地跑迁移，或给 token 补 D1:Edit |
 | push 了但没触发构建 | 配置了 build watch paths 且路径不含改动文件 | 删掉 watch paths 配置（见 3.3） |
 | 连接仓库时构建命令没有自动填 | 预期行为：自动预填是 Deploy 按钮流程专属，手动连接只做框架探测（探测不到） | 手动填一条 Build command：`bun run build:web`（见 3.2/3.3） |
@@ -543,9 +513,9 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql   # 仓库�
 
 | 症状 | 原因 | 处置 |
 |---|---|---|
-| 登录弹"管理员凭据未配置"（接口 503） | 预期引导：`ADMIN_USERNAME` / `ADMIN_PASSWORD` 两个 secret 还没配 | 按提示到 Settings → Variables and Secrets 添加（类型 Secret），保存即生效无需重新构建 |
-| 无法登录面板（401 invalid credentials） | secret 已配置但值不匹配（或加到了 Build Variables / 别的 Worker 上）（旧式部署则是哈希与 `TOKEN_SALT` 不配对） | 核对 secrets 位置与拼写；确认面板域名对应的 Worker 就是配了 secrets 的那个 |
-| 能登录但面板数据报错（表不存在） | 首次部署后迁移未执行 | 按 3.6 执行 `d1 migrations apply DB --remote` |
+| 打开面板无法登录（接口 503 提示未初始化） | 数据库中尚无管理员账号（/setup 未完成） | 打开 `/setup` 页面完成管理员创建；已建过账号则直接用其登录 |
+| 无法登录面板（401 invalid credentials） | 用户名或密码错误 | 核对 /setup 时设置的管理员账号；遗忘时删除 `users` 表中 `role='admin'` 的行可重新触发向导 |
+| 能登录但面板数据报错（表不存在） | 部署命令未含迁移（Deploy command 不是 `bun run deploy:server`） | 按上文配置 Deploy command 重新部署；或本地执行 `bunx wrangler d1 migrations apply DB --remote` |
 | 登录态频繁丢失 | 更改了 `SESSION_SECRET`（使所有会话失效，一次性） | 重新登录即可 |
 | 统计/用量不更新 | agent 掉线或统计缓冲未到 flush 间隔 | 看节点在线状态；默认 60s 批量上报，稍等 |
 

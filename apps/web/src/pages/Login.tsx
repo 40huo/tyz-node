@@ -1,14 +1,21 @@
 import { Card, toast } from "@heroui/react";
+import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { FormShell, fail, SubmitButton, TextForm } from "../ui";
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const status = useQuery({ queryKey: ["setup-status"], queryFn: api.setupStatus, retry: 1 });
   const [values, setValues] = useState({ username: "", password: "" });
   const [errors, setErrors] = useState<{ username?: string; password?: string }>({});
   const [pending, setPending] = useState(false);
+
+  // Fresh deployment: no admin account yet — route the operator to the wizard.
+  if (status.data && !status.data.initialized) {
+    return <Navigate to="/setup" replace />;
+  }
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

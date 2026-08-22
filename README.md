@@ -38,11 +38,10 @@ GOST 隧道管理平台：Cloudflare 上的控制面（Worker + D1 + 管理 Web�
 ```bash
 bun install
 
-# 1. 控制面（端口 8787；wrangler.jsonc 与 .dev.vars 都在仓库根）
-cp .dev.vars.example .dev.vars        # 默认 admin/admin123 即可登录本地面板
+# 1. 控制面（端口 8787；wrangler.jsonc 在仓库根，本地零配置文件）
 bunx wrangler d1 migrations apply DB --local
 bun run db:seed:local                 # 可选：本地样例数据
-bun run dev:server                    # wrangler dev
+bun run dev:server                    # wrangler dev；首次打开面板会引导 /setup 创建管理员
 
 # 2. 管理面板（端口 5173，/admin 等代理到 8787）
 bun run dev:web
@@ -57,7 +56,7 @@ bun run test:agent
 apps/agent/scripts/e2e-local.sh
 ```
 
-样例数据中节点 1/2 的 token 为 `dev-token-1`/`dev-token-2`（对应 `.dev.vars` 中 `TOKEN_SALT=dev-token-salt`）；拓扑含单节点直转（tunnel-1）与双节点中继（tunnel-2：两条入口规则共享出口 :16900 的 relay 监听）。生产节点请在管理面板创建节点，Token 仅在创建/轮换时显示一次。
+样例数据中节点 1/2 的 token 为 `dev-token-1`/`dev-token-2`（明文存库，无需任何本地配置）；拓扑含单节点直转（tunnel-1）与双节点中继（tunnel-2：两条入口规则共享出口 :16900 的 relay 监听）。生产节点请在管理面板创建，令牌常驻详情页（脱敏展示、可揭示复制）。
 
 完整数据面验证（可选）：向规则监听端口发流量（如 `curl http://localhost:8080`），流量经内嵌 GOST 转发到目标，统计会回流到 D1（管理面板节点统计或 `GET /api/admin/nodes/1/stats` 可见）。
 

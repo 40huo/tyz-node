@@ -32,7 +32,7 @@ import {
   updateTunnelSchema,
   updateUserSchema,
 } from "@tyz/shared";
-import { and, count, desc, eq, gte } from "drizzle-orm";
+import { and, count, desc, eq, gte, ne } from "drizzle-orm";
 import { Hono } from "hono";
 import { createDb, type Database } from "../db";
 import { nodeEntityColumns, recomputeNodeConfig, toRelayNode, toRelayRule, toTunnel } from "../db/repo";
@@ -50,11 +50,11 @@ import {
   userPackages,
   users,
 } from "../db/schema";
-import type { Bindings } from "../env";
+import type { Bindings, Variables } from "../env";
 import {
   adminAuth,
   clearSessionCookie,
-  isAdminAuthConfigured,
+  hasAdminAccount,
   issueSessionCookie,
   verifyAdminCredentials,
 } from "../middleware/adminAuth";
@@ -63,9 +63,8 @@ import { dashboardSummary, dashboardTraffic } from "../services/dashboard";
 import { broadcastNodeMessage, notifyConfigChanged } from "../services/notify";
 import { getActiveSubscriptions, quotaDecisionsForUsers, userQuotaSummary } from "../services/quota";
 import { getTlsDomain, getTlsStatus, setTlsDomain } from "../services/tls";
-import { hashNodeToken } from "../utils/crypto";
 
-export const adminRoutes = new Hono<{ Bindings: Bindings }>();
+export const adminRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 // ---- Auth ----
 
@@ -74,22 +73,16 @@ adminRoutes.post("/login", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid login payload" }, 400);
   }
-  if (!isAdminAuthConfigured(c.env)) {
+  if (!(await hasAdminAccount(c.env))) {
     // A distinct status so a fresh deployment fails loudly with setup guidance
     // instead of an ambiguous "wrong password" 401.
-    return c.json(
-      {
-        error:
-          "管理员凭据未配置：请在 Cloudflare Dashboard → Settings → Variables and Secrets 添加 ADMIN_USERNAME 与 ADMIN_PASSWORD（类型选 Secret），保存后立即生效，无需重新部署",
-      },
-      503,
-    );
+    return c.json({ error: "尚未创建管理员账号：请打开 /setup 页面完成初始化" }, 503);
   }
   if (!(await verifyAdminCredentials(c.env, parsed.data.username, parsed.data.password))) {
     return c.json({ error: "invalid credentials" }, 401);
   }
-  await issueSessionCookie(c);
-  return c.json({ ok: true, username: c.env.ADMIN_USERNAME });
+  await issueSessionCookie(c, parsed.data.username);
+  return c.json({ ok: true, username: parsed.data.username });
 });
 
 adminRoutes.use("*", adminAuth());
@@ -99,7 +92,7 @@ adminRoutes.post("/logout", (c) => {
   return c.json({ ok: true });
 });
 
-adminRoutes.get("/me", (c) => c.json({ username: c.env.ADMIN_USERNAME }));
+adminRoutes.get("/me", (c) => c.json({ username: c.get("adminName") }));
 
 // ---- Helpers ----
 
@@ -278,7 +271,6 @@ adminRoutes.post("/nodes", async (c) => {
   }
   const input = parsed.data;
   const token = generateNodeToken();
-  const tokenHash = await hashNodeToken(c.env.TOKEN_SALT, token);
   const ts = now();
 
   const [inserted] = await createDb(c.env.DB)
@@ -288,7 +280,7 @@ adminRoutes.post("/nodes", async (c) => {
       description: input.description ?? null,
       address: input.address,
       display_address: input.display_address ?? null,
-      token_hash: tokenHash,
+      token,
       token_hint: token.slice(-4),
       version: input.version ?? null,
       level: input.level,
@@ -304,7 +296,13 @@ adminRoutes.post("/nodes", async (c) => {
     })
     .returning({ id: relayNodes.id });
 
-  await recordAudit(c.env, { action: "node.create", targetType: "node", targetId: inserted.id, detail: input.name });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "node.create",
+    targetType: "node",
+    targetId: inserted.id,
+    detail: input.name,
+  });
   await recomputeAndNotify(c.env, inserted.id);
   const node = await nodeWithMeta(createDb(c.env.DB), inserted.id);
   return c.json({ node, token }, 201);
@@ -345,7 +343,13 @@ adminRoutes.put("/nodes/:id", async (c) => {
   patch.updated_at = now();
 
   await createDb(c.env.DB).update(relayNodes).set(patch).where(eq(relayNodes.id, id)).run();
-  await recordAudit(c.env, { action: "node.update", targetType: "node", targetId: id, detail: input.name ?? "" });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "node.update",
+    targetType: "node",
+    targetId: id,
+    detail: input.name ?? "",
+  });
 
   await recomputeAndNotify(c.env, id);
   const node = await nodeWithMeta(createDb(c.env.DB), id);
@@ -368,7 +372,7 @@ adminRoutes.delete("/nodes/:id", async (c) => {
   for (const { tunnel_id } of tunnelRows) {
     await recomputeTunnelNodes(c.env, tunnel_id);
   }
-  await recordAudit(c.env, { action: "node.delete", targetType: "node", targetId: id });
+  await recordAudit(c.env, { actor: c.get("adminName"), action: "node.delete", targetType: "node", targetId: id });
   return c.json({ ok: true });
 });
 
@@ -382,17 +386,35 @@ adminRoutes.post("/nodes/:id/recompute", async (c) => {
 adminRoutes.post("/nodes/:id/rotate-token", async (c) => {
   const id = Number(c.req.param("id"));
   const token = generateNodeToken();
-  const tokenHash = await hashNodeToken(c.env.TOKEN_SALT, token);
   const updated = await createDb(c.env.DB)
     .update(relayNodes)
-    .set({ token_hash: tokenHash, token_hint: token.slice(-4), updated_at: now() })
+    .set({ token, token_hint: token.slice(-4), updated_at: now() })
     .where(eq(relayNodes.id, id))
     .returning({ id: relayNodes.id });
   if (updated.length === 0) {
     return c.json({ error: "node not found" }, 404);
   }
-  await recordAudit(c.env, { action: "node.rotate_token", targetType: "node", targetId: id });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "node.rotate_token",
+    targetType: "node",
+    targetId: id,
+  });
   return c.json({ id, token });
+});
+
+/** Reveal a node's plaintext token — the panel's masked display fetches this on demand. */
+adminRoutes.get("/nodes/:id/token", async (c) => {
+  const id = Number(c.req.param("id"));
+  const row = await createDb(c.env.DB)
+    .select({ token: relayNodes.token })
+    .from(relayNodes)
+    .where(eq(relayNodes.id, id))
+    .get();
+  if (!row) {
+    return c.json({ error: "node not found" }, 404);
+  }
+  return c.json({ token: row.token });
 });
 
 adminRoutes.get("/nodes/:id/stats", async (c) => {
@@ -790,7 +812,13 @@ adminRoutes.post("/rules", async (c) => {
   if (input.tunnel_id) {
     await recomputeTunnelNodes(c.env, input.tunnel_id);
   }
-  await recordAudit(c.env, { action: "rule.create", targetType: "rule", targetId: rule.id, detail: rule.name });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "rule.create",
+    targetType: "rule",
+    targetId: rule.id,
+    detail: rule.name,
+  });
   return c.json({ rule: toRelayRule(rule) }, 201);
 });
 
@@ -857,7 +885,13 @@ adminRoutes.put("/rules/:id", async (c) => {
   for (const tunnelId of affected) {
     await recomputeTunnelNodes(c.env, tunnelId);
   }
-  await recordAudit(c.env, { action: "rule.update", targetType: "rule", targetId: id, detail: input.name ?? "" });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "rule.update",
+    targetType: "rule",
+    targetId: id,
+    detail: input.name ?? "",
+  });
 
   const [row] = await db.select().from(relayRules).where(eq(relayRules.id, id));
   return c.json({ rule: row ? toRelayRule(row) : null });
@@ -878,7 +912,7 @@ adminRoutes.delete("/rules/:id", async (c) => {
   if (existing.tunnel_id) {
     await recomputeTunnelNodes(c.env, existing.tunnel_id);
   }
-  await recordAudit(c.env, { action: "rule.delete", targetType: "rule", targetId: id });
+  await recordAudit(c.env, { actor: c.get("adminName"), action: "rule.delete", targetType: "rule", targetId: id });
   return c.json({ ok: true });
 });
 
@@ -906,7 +940,13 @@ adminRoutes.post("/rules/:id/restart", async (c) => {
     .where(eq(chains.tunnel_id, rule.tunnel_id));
   const nodeIds = rows.map((r) => r.node_id);
   await broadcastNodeMessage(c.env, nodeIds, { type: "restart_service", service: `service-${id}` });
-  await recordAudit(c.env, { action: "rule.restart", targetType: "rule", targetId: id, detail: rule.name });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "rule.restart",
+    targetType: "rule",
+    targetId: id,
+    detail: rule.name,
+  });
   return c.json({ ok: true, nodes: nodeIds.length });
 });
 
@@ -961,7 +1001,13 @@ adminRoutes.post("/endpoints", async (c) => {
       updated_at: ts,
     })
     .returning();
-  await recordAudit(c.env, { action: "endpoint.create", targetType: "endpoint", targetId: row.id, detail: row.name });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "endpoint.create",
+    targetType: "endpoint",
+    targetId: row.id,
+    detail: row.name,
+  });
   return c.json({ endpoint: toEndpoint(row) }, 201);
 });
 
@@ -1005,7 +1051,13 @@ adminRoutes.put("/endpoints/:id", async (c) => {
       await recomputeTunnelNodes(c.env, tunnelId);
     }
   }
-  await recordAudit(c.env, { action: "endpoint.update", targetType: "endpoint", targetId: id, detail: row.name });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "endpoint.update",
+    targetType: "endpoint",
+    targetId: id,
+    detail: row.name,
+  });
   return c.json({ endpoint: toEndpoint(row) });
 });
 
@@ -1020,14 +1072,28 @@ adminRoutes.delete("/endpoints/:id", async (c) => {
   if (deleted.length === 0) {
     return c.json({ error: "endpoint not found" }, 404);
   }
-  await recordAudit(c.env, { action: "endpoint.delete", targetType: "endpoint", targetId: id });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "endpoint.delete",
+    targetType: "endpoint",
+    targetId: id,
+  });
   return c.json({ ok: true });
 });
 
 // ---- Users (tenants) ----
 
 function toUser(row: typeof users.$inferSelect): User {
-  return { ...row, note: row.note ?? undefined };
+  // Explicit field pick: the table also carries login material (password_hash) and
+  // the internal role column — neither may ever reach an API response.
+  return {
+    id: row.id,
+    name: row.name,
+    note: row.note ?? undefined,
+    status: row.status,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
 }
 
 function toPackage(row: typeof packages.$inferSelect): Package {
@@ -1041,7 +1107,9 @@ function toPackage(row: typeof packages.$inferSelect): Package {
 
 adminRoutes.get("/users", async (c) => {
   const db = createDb(c.env.DB);
-  const rows = await db.select().from(users).orderBy(users.id);
+  // Admin accounts are operators, not business tenants — the panel's user
+  // management (subscriptions/quota) never sees them.
+  const rows = await db.select().from(users).where(ne(users.role, "admin")).orderBy(users.id);
   const subs = await getActiveSubscriptions(
     db,
     rows.map((r) => r.id),
@@ -1073,16 +1141,28 @@ adminRoutes.post("/users", async (c) => {
       updated_at: ts,
     })
     .returning();
-  await recordAudit(c.env, { action: "user.create", targetType: "user", targetId: row.id, detail: row.name });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "user.create",
+    targetType: "user",
+    targetId: row.id,
+    detail: row.name,
+  });
   return c.json({ user: toUser(row) }, 201);
 });
+
+/** Admin rows are shielded from business user management: reads 404, mutations 409. */
+async function isUserRowAdmin(db: Database, id: number): Promise<boolean> {
+  const row = await db.select({ role: users.role }).from(users).where(eq(users.id, id)).get();
+  return row?.role === "admin";
+}
 
 /** User detail incl. its rules' quota status (used/remaining/stopped reasons). */
 adminRoutes.get("/users/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const db = createDb(c.env.DB);
   const row = await db.select().from(users).where(eq(users.id, id)).get();
-  if (!row) return c.json({ error: "user not found" }, 404);
+  if (!row || row.role === "admin") return c.json({ error: "user not found" }, 404);
   const owned = await db.select().from(relayRules).where(eq(relayRules.user_id, id));
   const summary = await userQuotaSummary(db, toUser(row), owned.map(toRelayRule));
   return c.json({ user: toUser(row), ...summary });
@@ -1090,6 +1170,9 @@ adminRoutes.get("/users/:id", async (c) => {
 
 adminRoutes.put("/users/:id", async (c) => {
   const id = Number(c.req.param("id"));
+  if (await isUserRowAdmin(createDb(c.env.DB), id)) {
+    return c.json({ error: "管理员账号不通过用户管理接口修改" }, 409);
+  }
   const parsed = updateUserSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "invalid user payload", detail: parsed.error.flatten() }, 400);
@@ -1113,6 +1196,7 @@ adminRoutes.put("/users/:id", async (c) => {
     await recomputeUserNodes(c.env, id);
   }
   await recordAudit(c.env, {
+    actor: c.get("adminName"),
     action: "user.update",
     targetType: "user",
     targetId: id,
@@ -1124,6 +1208,9 @@ adminRoutes.put("/users/:id", async (c) => {
 adminRoutes.delete("/users/:id", async (c) => {
   const id = Number(c.req.param("id"));
   const db = createDb(c.env.DB);
+  if (await isUserRowAdmin(db, id)) {
+    return c.json({ error: "管理员账号不能删除" }, 409);
+  }
   // Collect affected tunnels BEFORE the delete: the FK then sets rules.user_id
   // to NULL (rules become admin-managed), so they can no longer be found via
   // the user — the affected nodes must drop their quota objects.
@@ -1140,7 +1227,7 @@ adminRoutes.delete("/users/:id", async (c) => {
       await recomputeTunnelNodes(c.env, tunnel_id);
     }
   }
-  await recordAudit(c.env, { action: "user.delete", targetType: "user", targetId: id });
+  await recordAudit(c.env, { actor: c.get("adminName"), action: "user.delete", targetType: "user", targetId: id });
   return c.json({ ok: true });
 });
 
@@ -1156,6 +1243,9 @@ adminRoutes.post("/users/:id/subscribe", async (c) => {
     return c.json({ error: "invalid subscribe payload", detail: parsed.error.flatten() }, 400);
   }
   const db = createDb(c.env.DB);
+  if (await isUserRowAdmin(db, userId)) {
+    return c.json({ error: "管理员账号不参与套餐订阅" }, 409);
+  }
   const user = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).get();
   if (!user) return c.json({ error: "user not found" }, 404);
   const pkg = await db.select().from(packages).where(eq(packages.id, parsed.data.package_id)).get();
@@ -1191,6 +1281,7 @@ adminRoutes.post("/users/:id/subscribe", async (c) => {
 
   await recomputeUserNodes(c.env, userId);
   await recordAudit(c.env, {
+    actor: c.get("adminName"),
     action: "subscribe",
     targetType: "user",
     targetId: userId,
@@ -1223,6 +1314,7 @@ adminRoutes.put("/settings/tls-domain", async (c) => {
   const previous = await getTlsDomain(db);
   await setTlsDomain(db, parsed.data.domain);
   await recordAudit(c.env, {
+    actor: c.get("adminName"),
     action: "settings.tls_domain",
     targetType: "settings",
     targetId: "tls_domain",
@@ -1276,7 +1368,13 @@ adminRoutes.post("/packages", async (c) => {
       updated_at: ts,
     })
     .returning();
-  await recordAudit(c.env, { action: "package.create", targetType: "package", targetId: row.id, detail: row.name });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "package.create",
+    targetType: "package",
+    targetId: row.id,
+    detail: row.name,
+  });
   return c.json({ package: toPackage(row) }, 201);
 });
 
@@ -1314,7 +1412,13 @@ adminRoutes.put("/packages/:id", async (c) => {
   for (const { user_id } of subs) {
     await recomputeUserNodes(c.env, user_id);
   }
-  await recordAudit(c.env, { action: "package.update", targetType: "package", targetId: id, detail: updated[0].name });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "package.update",
+    targetType: "package",
+    targetId: id,
+    detail: updated[0].name,
+  });
   return c.json({ package: toPackage(updated[0]) });
 });
 
@@ -1329,6 +1433,11 @@ adminRoutes.delete("/packages/:id", async (c) => {
   if (deleted.length === 0) {
     return c.json({ error: "package not found" }, 404);
   }
-  await recordAudit(c.env, { action: "package.delete", targetType: "package", targetId: id });
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "package.delete",
+    targetType: "package",
+    targetId: id,
+  });
   return c.json({ ok: true });
 });

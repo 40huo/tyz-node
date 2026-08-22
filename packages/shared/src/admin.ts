@@ -29,6 +29,22 @@ export const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+// ---- First-run setup (admin bootstrap) ----
+
+/** Cookie/ASCII-safe: the username also rides inside the session cookie value. */
+export const setupSchema = z.object({
+  username: z.string().regex(/^[A-Za-z0-9_-]{3,32}$/, "用户名需 3-32 位字母/数字/下划线/连字符"),
+  password: z.string().min(8, "密码至少 8 位").max(128),
+});
+export type SetupInput = z.infer<typeof setupSchema>;
+
+export interface SetupStatusResponse {
+  /** True once any role='admin' user exists (DB account login is the only path). */
+  initialized: boolean;
+  /** False when the users table is missing — migrations have not run yet. */
+  schema_ready: boolean;
+}
+
 // ---- Node CRUD ----
 
 const tlsConfigInputSchema = z.object({
@@ -64,10 +80,15 @@ export interface NodeWithMeta extends RelayNode {
   token_hint: string;
 }
 
-/** Returned once on node creation / token rotation. */
+/** Full node token — returned by create/rotate and by the reveal endpoint. */
 export interface NodeToken {
   id: number;
   token: string;
+}
+
+/** GET /api/admin/nodes/:id/token — on-demand reveal behind the panel's masked display. */
+export interface NodeTokenResponse {
+  token: string | null;
 }
 
 // ---- Tunnel CRUD ----

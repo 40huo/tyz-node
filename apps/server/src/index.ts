@@ -7,6 +7,7 @@ import { NodePushDO } from "./do/nodePush";
 import type { Bindings, Variables } from "./env";
 import { adminRoutes } from "./routes/admin";
 import { agentRoutes } from "./routes/agent";
+import { setupRoutes } from "./routes/setup";
 import { notifyConfigChanged } from "./services/notify";
 import { renewTlsMaterial } from "./services/tls";
 
@@ -16,6 +17,7 @@ app.get("/api/healthz", (c) => c.json({ ok: true }));
 
 app.route("/api/agent", agentRoutes);
 app.route("/api/admin", adminRoutes);
+app.route("/api/setup", setupRoutes);
 
 app.notFound(async (c) => {
   // SPA fallback: browser navigations to client-side routes get index.html;

@@ -12,8 +12,8 @@
 #      admission — the censorship-evasion link shape.
 #
 # Prerequisites: bun, go, python3, and wrangler dev running on :8787 with the
-# root .dev.vars + local seed applied. The script re-applies the seed,
-# then builds the agent, starts two local HTTP targets and two agent
+# local seed applied (zero-config: no .dev.vars needed). The script re-applies
+# the seed, then builds the agent, starts two local HTTP targets and two agent
 # processes, and asserts distinguishable responses through both entry ports.
 set -euo pipefail
 

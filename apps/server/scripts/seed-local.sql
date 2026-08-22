@@ -1,9 +1,9 @@
 -- Local development seed data (run against the LOCAL D1 only):
 --   bun run db:seed:local    # at the repo root (= wrangler d1 execute DB --local --file apps/server/scripts/seed-local.sql)
 --
--- Seeded node tokens use TOKEN_SALT=dev-token-salt:
---   node-1 -> dev-token-1  sha256("dev-token-salt:node:dev-token-1")
---   node-2 -> dev-token-2  sha256("dev-token-salt:node:dev-token-2")
+-- Seeded node tokens are stored PLAINTEXT (zero-config local dev):
+--   node-1 -> dev-token-1
+--   node-2 -> dev-token-2
 --
 -- Topology:
 --   tunnel-1  single-hop: node-1 entry forwards straight to the target
@@ -30,12 +30,12 @@ DELETE FROM app_settings;
 -- via the ordinary config version bump).
 DELETE FROM tls_material;
 
-INSERT INTO relay_nodes (id, name, address, display_address, token_hash, token_hint, ports, is_public)
+INSERT INTO relay_nodes (id, name, address, display_address, token, token_hint, ports, is_public)
 VALUES
   (1, 'node-1', '127.0.0.1', 'relay1.example.com',
-   '5ad1ecaa68b3cc59b696da3cf1df6fd5dcd81cced1fc2fa9a1aa2576708504cb', 'e-1', '10000-20000', 1),
+   'dev-token-1', 'e-1', '10000-20000', 1),
   (2, 'node-2', '127.0.0.1', NULL,
-   '1aa0290b2ce15b72926007dd779e17882c38ae960983ad57693cf142583d9965', 'e-2', '20000-30000', 0);
+   'dev-token-2', 'e-2', '20000-30000', 0);
 
 INSERT INTO app_settings (key, value) VALUES ('tls_domain', 'relay.local.test');
 

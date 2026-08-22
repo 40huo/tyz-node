@@ -14,12 +14,15 @@ import type {
   Endpoint,
   EndpointWithMeta,
   NodeStatsRow,
+  NodeTokenResponse,
   NodeWithMeta,
   Package,
   QuotaDecision,
   RelayRule,
   RuleQuotaStatus,
   ServiceHealthRow,
+  SetupInput,
+  SetupStatusResponse,
   TlsStatus,
   TunnelWithMeta,
   UpdateChainInput,
@@ -70,6 +73,8 @@ export const api = {
     request<{ ok: true; username: string }>("/api/admin/login", jsonBody({ username, password })),
   logout: () => request<{ ok: true }>("/api/admin/logout", { method: "POST" }),
   me: () => request<{ username: string }>("/api/admin/me"),
+  setupStatus: () => request<SetupStatusResponse>("/api/setup/status"),
+  initSetup: (input: SetupInput) => request<{ ok: true; username: string }>("/api/setup", jsonBody(input)),
 
   listNodes: () => request<{ nodes: NodeWithMeta[] }>("/api/admin/nodes"),
   createNode: (input: CreateNodeInput) =>
@@ -83,6 +88,7 @@ export const api = {
   recomputeNode: (id: number) => request<{ ok: true }>(`/api/admin/nodes/${id}/recompute`, { method: "POST" }),
   rotateNodeToken: (id: number) =>
     request<{ id: number; token: string }>(`/api/admin/nodes/${id}/rotate-token`, { method: "POST" }),
+  nodeToken: (id: number) => request<NodeTokenResponse>(`/api/admin/nodes/${id}/token`),
   nodeStats: (id: number, limit = 100) =>
     request<{ rows: NodeStatsRow[] }>(`/api/admin/nodes/${id}/stats?limit=${limit}`),
 

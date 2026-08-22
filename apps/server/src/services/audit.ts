@@ -10,6 +10,8 @@ import type { Bindings } from "../env";
  * and swallowed, never propagated into the admin response.
  */
 export interface AuditEntry {
+  /** Session username of the acting admin (the setup wizard passes the just-created account). */
+  actor: string;
   action: string;
   targetType?: string;
   targetId?: string | number;
@@ -22,7 +24,7 @@ export async function recordAudit(env: Bindings, entry: AuditEntry): Promise<voi
       .insert(auditLog)
       .values({
         ts: new Date().toISOString(),
-        actor: env.ADMIN_USERNAME,
+        actor: entry.actor,
         action: entry.action,
         target_type: entry.targetType ?? "",
         target_id: entry.targetId === undefined ? "" : String(entry.targetId),
