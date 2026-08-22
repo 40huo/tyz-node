@@ -1,5 +1,5 @@
 import { Button, FieldError, Switch, Table } from "@heroui/react";
-import { IconPlus } from "@tabler/icons-react";
+import { IconPencil, IconPlus, IconRoute, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type Chain,
@@ -16,8 +16,9 @@ import { type FormEvent, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
-import { chainTypeLabel, forwardModeLabel } from "../labels";
+import { chainTypeLabel, FORWARD_MODE_HINTS, forwardModeLabel } from "../labels";
 import {
+  DataText,
   emptyState,
   type FormErrors,
   FormFooter,
@@ -25,12 +26,11 @@ import {
   FormShell,
   fail,
   hasErrors,
+  IconAction,
   ListToolbar,
-  Mono,
   NumberForm,
   PageHeader,
   PageShell,
-  RowButton,
   SearchInput,
   SelectForm,
   SideDrawer,
@@ -45,8 +45,8 @@ import {
 // ---- Tunnel form ----
 
 const FORWARD_MODE_OPTIONS = [
-  { value: ForwardMode.RELAY, label: "relay 端口复用（默认）" },
-  { value: ForwardMode.RAW, label: "裸转发（每规则独立端口）" },
+  { value: ForwardMode.RELAY, label: "端口复用（relay 协议，默认）" },
+  { value: ForwardMode.RAW, label: "直通转发（原生 TCP，每规则独立端口）" },
 ];
 
 interface TunnelFormValues {
@@ -117,7 +117,7 @@ function TunnelForm({
     const errs: FormErrors<TunnelFormValues> = {};
     if (!values.name.trim()) errs.name = "请输入名称";
     if (values.forward_mode === ForwardMode.RAW && values.tls_enabled) {
-      errs.tls_enabled = "裸转发不支持 TLS（链路即纯 TCP）";
+      errs.tls_enabled = "直通转发不支持 TLS（链路即纯 TCP）";
     }
     setErrors(errs);
     if (hasErrors(errs)) return;
@@ -150,7 +150,7 @@ function TunnelForm({
       />
       {singleHop ? null : values.forward_mode === ForwardMode.RAW ? (
         <p className="text-muted">
-          裸转发：不使用 relay 协议、无端口复用——每条规则在两端各占一个独立 TCP 端口，链路上无任何自定义协议特征。
+          直通转发：不走 relay 协议、无端口复用——每条规则在两端各占一个独立 TCP 端口，链路上无任何自定义协议特征。
         </p>
       ) : (
         <div className="flex flex-col gap-1">
@@ -393,12 +393,12 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
                   {(c) => (
                     <Table.Row id={c.id}>
                       <Table.Cell>
-                        <Mono>{c.index}</Mono>
+                        <DataText>{c.index}</DataText>
                       </Table.Cell>
                       <Table.Cell>
                         <span className="font-medium">
                           {nodes.find((n) => n.id === c.node_id)?.name ?? "?"}{" "}
-                          <Mono className="text-muted">#{c.node_id}</Mono>
+                          <DataText className="text-muted">#{c.node_id}</DataText>
                         </span>
                       </Table.Cell>
                       <Table.Cell>
@@ -407,23 +407,27 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
                         </StatusChip>
                       </Table.Cell>
                       <Table.Cell>
-                        <Mono>{c.transport}</Mono>
+                        <DataText>{c.transport}</DataText>
                       </Table.Cell>
                       <Table.Cell>
-                        <Mono>{c.port === 0 ? "自动" : c.port}</Mono>
+                        <DataText>{c.port === 0 ? "自动" : c.port}</DataText>
                       </Table.Cell>
                       <Table.Cell>{c.strategy || "-"}</Table.Cell>
                       <Table.Cell>
-                        <div className="flex justify-end gap-1">
-                          <RowButton onPress={() => setEditing(c)}>编辑</RowButton>
-                          <RowButton
-                            danger
+                        <div className="flex justify-end gap-0.5">
+                          <IconAction
+                            label="编辑"
+                            icon={<IconPencil size={16} stroke={2} />}
+                            onPress={() => setEditing(c)}
+                          />
+                          <IconAction
+                            label="删除"
+                            tone="danger"
+                            icon={<IconTrash size={16} stroke={2} />}
                             onPress={() =>
                               confirmDanger("删除链路", "确定删除该链路？", () => deleteMutation.mutate(c.id))
                             }
-                          >
-                            删除
-                          </RowButton>
+                          />
                         </div>
                       </Table.Cell>
                     </Table.Row>
@@ -525,14 +529,17 @@ export default function TunnelsPage() {
                 {(t) => (
                   <Table.Row id={t.id}>
                     <Table.Cell>
-                      <Mono>{t.id}</Mono>
+                      <DataText>{t.id}</DataText>
                     </Table.Cell>
                     <Table.Cell>
                       <span className="font-medium">{t.name}</span>
                     </Table.Cell>
                     <Table.Cell>
                       <div className="flex items-center gap-1">
-                        <StatusChip tone={forwardModeLabel(t.forward_mode).tone} title={t.forward_mode}>
+                        <StatusChip
+                          tone={forwardModeLabel(t.forward_mode).tone}
+                          title={FORWARD_MODE_HINTS[t.forward_mode] ?? t.forward_mode}
+                        >
                           {forwardModeLabel(t.forward_mode).label}
                         </StatusChip>
                         {t.tls_enabled ? (
@@ -547,19 +554,27 @@ export default function TunnelsPage() {
                       {t.description ? <span>{t.description}</span> : <span className="text-muted">-</span>}
                     </Table.Cell>
                     <Table.Cell>
-                      <div className="flex justify-end gap-1">
-                        <RowButton onPress={() => setEditing(t)}>编辑</RowButton>
-                        <RowButton onPress={() => setChainsOf(t)}>链路</RowButton>
-                        <RowButton
-                          danger
+                      <div className="flex justify-end gap-0.5">
+                        <IconAction
+                          label="编辑"
+                          icon={<IconPencil size={16} stroke={2} />}
+                          onPress={() => setEditing(t)}
+                        />
+                        <IconAction
+                          label="链路管理"
+                          icon={<IconRoute size={16} stroke={2} />}
+                          onPress={() => setChainsOf(t)}
+                        />
+                        <IconAction
+                          label="删除"
+                          tone="danger"
+                          icon={<IconTrash size={16} stroke={2} />}
                           onPress={() =>
                             confirmDanger("删除隧道", "其下链路与规则关联将一并清理，确定？", () =>
                               deleteMutation.mutate(t.id),
                             )
                           }
-                        >
-                          删除
-                        </RowButton>
+                        />
                       </div>
                     </Table.Cell>
                   </Table.Row>

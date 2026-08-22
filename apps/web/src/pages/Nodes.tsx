@@ -1,7 +1,16 @@
 import { Button, Switch, Table, Tooltip, toast } from "@heroui/react";
-import { IconCheck, IconCopy, IconPlus, IconRefresh, IconRotateClockwise } from "@tabler/icons-react";
+import {
+  IconChartBar,
+  IconCheck,
+  IconCopy,
+  IconKey,
+  IconPencil,
+  IconPlus,
+  IconRefresh,
+  IconTrash,
+} from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CreateNodeInput, NodeWithMeta } from "@tyz/shared";
+import type { CreateNodeInput, DashboardSummary, NodeWithMeta } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
@@ -9,6 +18,7 @@ import { confirmDanger } from "../confirm";
 import { formatTraffic } from "../format";
 import { serviceStateLabel } from "../labels";
 import {
+  DataText,
   emptyState,
   type FormErrors,
   FormFooter,
@@ -16,13 +26,12 @@ import {
   FormShell,
   fail,
   hasErrors,
+  IconAction,
   ListToolbar,
-  Mono,
   NumberForm,
   PageHeader,
   Pager,
   PageShell,
-  RowButton,
   SearchInput,
   SideDrawer,
   StatusChip,
@@ -217,7 +226,7 @@ function TokenDialog({ token, onClose }: { token: string | null; onClose: () => 
         <>
           <p className="text-sm text-muted">新令牌已生效，可随时在节点详情中查看：</p>
           <div className="mt-2 flex items-start gap-2">
-            <Mono className="flex-1 break-all text-sm leading-5">{token}</Mono>
+            <DataText className="flex-1 break-all text-sm leading-5">{token}</DataText>
             <Button
               isIconOnly
               variant="tertiary"
@@ -260,14 +269,14 @@ function TokenField({ nodeId, tokenHint }: { nodeId: number; tokenHint: string }
     <div className="flex items-center gap-2">
       {token === null ? (
         <>
-          <Mono className="flex-1">•••• {tokenHint || "????"}</Mono>
+          <DataText className="flex-1">•••• {tokenHint || "????"}</DataText>
           <Button variant="tertiary" size="sm" isPending={pending} onPress={reveal}>
             显示
           </Button>
         </>
       ) : (
         <>
-          <Mono className="flex-1 break-all text-sm leading-5">{token}</Mono>
+          <DataText className="flex-1 break-all text-sm leading-5">{token}</DataText>
           <Button
             isIconOnly
             variant="tertiary"
@@ -359,7 +368,7 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
                     className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-1.5"
                   >
                     <div className="flex min-w-0 items-center gap-2">
-                      <Mono className="truncate">{h.service}</Mono>
+                      <DataText className="truncate">{h.service}</DataText>
                       {conn && (
                         <span className="shrink-0 text-xs text-muted">
                           24h 峰值 {conn.max} · 均值 {conn.avg.toFixed(1)}
@@ -369,7 +378,9 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
                     <div className="flex shrink-0 items-center gap-2">
                       {h.error && (
                         <Tooltip delay={0}>
-                          <span className="max-w-[280px] truncate text-xs text-danger">{h.error}</span>
+                          <Tooltip.Trigger>
+                            <span className="max-w-[280px] truncate text-xs text-danger">{h.error}</span>
+                          </Tooltip.Trigger>
                           <Tooltip.Content className="max-w-sm">
                             <p>{h.error}</p>
                           </Tooltip.Content>
@@ -406,19 +417,19 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
                   {(row) => (
                     <Table.Row id={row.id}>
                       <Table.Cell>
-                        <Mono>{row.service}</Mono>
+                        <DataText>{row.service}</DataText>
                       </Table.Cell>
                       <Table.Cell>
                         {row.stats.totalConns} / {row.stats.currentConns}
                       </Table.Cell>
                       <Table.Cell>
-                        <Mono>
+                        <DataText>
                           {row.stats.inputBytes} / {row.stats.outputBytes} B
-                        </Mono>
+                        </DataText>
                       </Table.Cell>
                       <Table.Cell>{row.stats.totalErrs}</Table.Cell>
                       <Table.Cell>
-                        <Mono className="text-muted">{row.reported_at.replace("T", " ").slice(0, 19)}</Mono>
+                        <DataText className="text-muted">{row.reported_at.replace("T", " ").slice(0, 19)}</DataText>
                       </Table.Cell>
                     </Table.Row>
                   )}
@@ -430,6 +441,34 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
         </section>
       </div>
     </SideDrawer>
+  );
+}
+
+// ---- Health column ----
+
+type NodeHealthSummary = DashboardSummary["nodes_health"][number];
+
+/** 列表行健康 chip：口径与控制台健康墙一致（failed+apply_failed 计为异常，0 服务 = 未上报）。 */
+function NodeHealthChip({ health }: { health: NodeHealthSummary | undefined }) {
+  if (health === undefined) return <span className="text-muted">-</span>;
+  if (health.services === 0) {
+    return (
+      <StatusChip tone="default" title="agent 未上报健康快照">
+        未上报
+      </StatusChip>
+    );
+  }
+  if (health.failed > 0) {
+    return (
+      <StatusChip tone="danger" title={`${health.failed} 个服务失败/下发失败，点行尾「统计」查看详情`}>
+        {health.failed} 异常
+      </StatusChip>
+    );
+  }
+  return (
+    <StatusChip tone="success" title={`最近上报 ${health.last_report?.replace("T", " ").slice(0, 19) ?? "-"}`}>
+      {health.ready}/{health.services} 就绪
+    </StatusChip>
   );
 }
 
@@ -445,6 +484,13 @@ export default function NodesPage() {
   const [search, setSearch] = useState("");
 
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
+  // 复用控制台汇总的 nodes_health 聚合（一次请求拿全部节点），列表页据此给出异常标识
+  const healthQuery = useQuery({
+    queryKey: ["nodes-health"],
+    queryFn: api.dashboardSummary,
+    refetchInterval: 30_000,
+  });
+  const healthByNode = new Map(healthQuery.data?.nodes_health.map((h) => [h.node_id, h]));
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["nodes"] });
   const deleteMutation = useMutation({ mutationFn: api.deleteNode, onSuccess: invalidate, onError: fail });
@@ -492,7 +538,7 @@ export default function NodesPage() {
         <TableLoading />
       ) : (
         <Table.ScrollContainer>
-          <Table className="min-w-[960px]">
+          <Table className="min-w-[1040px]">
             <Table.Content aria-label="节点列表">
               <Table.Header>
                 <Table.Column id="id" defaultWidth={60} isRowHeader>
@@ -510,10 +556,13 @@ export default function NodesPage() {
                 <Table.Column id="traffic" defaultWidth={180}>
                   流量 (入/出)
                 </Table.Column>
+                <Table.Column id="health" defaultWidth={110}>
+                  健康
+                </Table.Column>
                 <Table.Column id="version" defaultWidth={100}>
                   配置版本
                 </Table.Column>
-                <Table.Column id="actions" defaultWidth={300}>
+                <Table.Column id="actions" defaultWidth={200}>
                   <span className="flex justify-end">操作</span>
                 </Table.Column>
               </Table.Header>
@@ -524,7 +573,7 @@ export default function NodesPage() {
                 {(n) => (
                   <Table.Row id={n.id}>
                     <Table.Cell>
-                      <Mono>{n.id}</Mono>
+                      <DataText>{n.id}</DataText>
                     </Table.Cell>
                     <Table.Cell>
                       <span className="flex items-center gap-1.5 font-medium">
@@ -533,64 +582,68 @@ export default function NodesPage() {
                       </span>
                     </Table.Cell>
                     <Table.Cell>
-                      <Mono>{n.address}</Mono>
+                      <DataText>{n.address}</DataText>
                     </Table.Cell>
                     <Table.Cell>{n.display_address ?? <span className="text-muted">-</span>}</Table.Cell>
                     <Table.Cell>
-                      <Mono>{n.ports}</Mono>
+                      <DataText>{n.ports}</DataText>
                     </Table.Cell>
                     <Table.Cell>
-                      <Mono>{n.rate === 1 ? "1" : `${n.rate}×`}</Mono>
+                      <DataText>{n.rate === 1 ? "1" : `${n.rate}×`}</DataText>
                     </Table.Cell>
                     <Table.Cell>
                       <span className="flex flex-col">
-                        <Mono>入 {formatTraffic(n.ingress_traffic)}</Mono>
-                        <Mono>出 {formatTraffic(n.egress_traffic)}</Mono>
+                        <DataText>入 {formatTraffic(n.ingress_traffic)}</DataText>
+                        <DataText>出 {formatTraffic(n.egress_traffic)}</DataText>
                       </span>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <NodeHealthChip health={healthByNode.get(n.id)} />
                     </Table.Cell>
                     <Table.Cell>
                       {n.config_version === null ? (
                         <span className="text-muted">-</span>
                       ) : (
-                        <Mono>{n.config_version}</Mono>
+                        <DataText>{n.config_version}</DataText>
                       )}
                     </Table.Cell>
                     <Table.Cell>
-                      <div className="flex justify-end gap-1">
-                        <RowButton onPress={() => setStatsNode(n)}>统计</RowButton>
-                        <RowButton onPress={() => setEditing(n)}>编辑</RowButton>
-                        <RowButton
+                      <div className="flex justify-end gap-0.5">
+                        <IconAction
+                          label="编辑"
+                          icon={<IconPencil size={16} stroke={2} />}
+                          onPress={() => setEditing(n)}
+                        />
+                        <IconAction
+                          label="统计"
+                          icon={<IconChartBar size={16} stroke={2} />}
+                          onPress={() => setStatsNode(n)}
+                        />
+                        <IconAction
+                          label="轮换令牌"
+                          tone="warning"
+                          icon={<IconKey size={16} stroke={2} />}
                           onPress={() =>
                             confirmDanger("轮换令牌", "旧令牌立即失效，节点机需同步更新 .env 并重启，确定？", () =>
                               rotateMutation.mutate(n.id),
                             )
                           }
-                        >
-                          <IconRotateClockwise size={14} stroke={1.7} />
-                          轮换
-                        </RowButton>
-                        <Tooltip delay={0}>
-                          <RowButton
-                            isIconOnly
-                            aria-label="重新计算配置"
-                            onPress={() => recomputeMutation.mutate(n.id)}
-                          >
-                            <IconRefresh size={15} stroke={1.7} />
-                          </RowButton>
-                          <Tooltip.Content>
-                            <p>重新计算配置</p>
-                          </Tooltip.Content>
-                        </Tooltip>
-                        <RowButton
-                          danger
+                        />
+                        <IconAction
+                          label="重新计算配置"
+                          icon={<IconRefresh size={16} stroke={2} />}
+                          onPress={() => recomputeMutation.mutate(n.id)}
+                        />
+                        <IconAction
+                          label="删除"
+                          tone="danger"
+                          icon={<IconTrash size={16} stroke={2} />}
                           onPress={() =>
                             confirmDanger("删除节点", "其链路将一并删除并触发相关节点重算，确定？", () =>
                               deleteMutation.mutate(n.id),
                             )
                           }
-                        >
-                          删除
-                        </RowButton>
+                        />
                       </div>
                     </Table.Cell>
                   </Table.Row>

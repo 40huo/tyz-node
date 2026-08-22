@@ -10,6 +10,7 @@ import type {
 } from "@tyz/shared";
 import {
   ChainType,
+  changePasswordSchema,
   createChainSchema,
   createEndpointSchema,
   createNodeSchema,
@@ -63,6 +64,7 @@ import { dashboardSummary, dashboardTraffic } from "../services/dashboard";
 import { broadcastNodeMessage, notifyConfigChanged } from "../services/notify";
 import { getActiveSubscriptions, quotaDecisionsForUsers, userQuotaSummary } from "../services/quota";
 import { getTlsDomain, getTlsStatus, setTlsDomain } from "../services/tls";
+import { hashPassword } from "../utils/crypto";
 
 export const adminRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -93,6 +95,28 @@ adminRoutes.post("/logout", (c) => {
 });
 
 adminRoutes.get("/me", (c) => c.json({ username: c.get("adminName") }));
+
+/** Change the logged-in admin's own password. Existing sessions stay valid (the
+ *  session HMAC secret is independent of the password — see setup.ts). */
+adminRoutes.put("/me/password", async (c) => {
+  const parsed = changePasswordSchema.safeParse(await readJson(c));
+  if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? "invalid input" }, 400);
+  const username = c.get("adminName");
+  if (!(await verifyAdminCredentials(c.env, username, parsed.data.old_password))) {
+    return c.json({ error: "当前密码不正确" }, 403);
+  }
+  await createDb(c.env.DB)
+    .update(users)
+    .set({ password_hash: await hashPassword(parsed.data.new_password), updated_at: new Date().toISOString() })
+    .where(and(eq(users.role, "admin"), eq(users.name, username)));
+  await recordAudit(c.env, {
+    actor: username,
+    action: "me.update_password",
+    targetType: "user",
+    targetId: username,
+  });
+  return c.json({ ok: true });
+});
 
 // ---- Helpers ----
 

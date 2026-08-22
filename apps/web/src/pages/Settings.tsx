@@ -3,7 +3,7 @@ import { IconSettings } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { api } from "../api";
-import { FormShell, fail, Mono, SubmitButton, TableLoading, TextForm } from "../ui";
+import { DataText, FormShell, fail, SubmitButton, TableLoading, TextForm } from "../ui";
 
 /** 系统设置各二级页面的内容均尚未有后端支撑，先以规划说明占位（tls 除外）。 */
 const SECTIONS = {
@@ -126,7 +126,7 @@ function TlsSettingsSection() {
                       <Table.Cell>{row.purpose}</Table.Cell>
                       <Table.Cell>
                         {row.not_after ? (
-                          <Mono>{formatDate(row.not_after)}</Mono>
+                          <DataText>{formatDate(row.not_after)}</DataText>
                         ) : (
                           <span className="text-muted">未生成</span>
                         )}
@@ -160,7 +160,7 @@ export default function SettingsPage({ kind }: { kind: SettingsKind }) {
       </Card.Header>
       <Card.Content>
         <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border py-10">
-          <IconSettings size={28} stroke={1.7} className="text-muted" />
+          <IconSettings size={28} stroke={2} className="text-muted" />
           <p className="text-sm text-muted">该模块开发中，暂未开放配置</p>
           <ul className="mt-2 list-disc pl-5 text-xs leading-6 text-muted">
             {section.planned.map((item) => (

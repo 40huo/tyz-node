@@ -52,11 +52,17 @@ export const quotaStopReasonLabel = withFallback({
   exhausted: { label: "流量已耗尽", tone: "danger" },
 });
 
-/** 隧道转发模式。 */
+/** 隧道转发模式：单色主题下 accent 与 default 近似，raw 用 warning（琥珀）保证区分度。 */
 export const forwardModeLabel = withFallback({
-  [ForwardMode.RELAY]: { label: "relay 复用", tone: "default" },
-  [ForwardMode.RAW]: { label: "裸转发", tone: "accent" },
+  [ForwardMode.RELAY]: { label: "端口复用", tone: "default" },
+  [ForwardMode.RAW]: { label: "直通转发", tone: "warning" },
 });
+
+/** 转发模式悬停说明（表格 chip 的 title）。 */
+export const FORWARD_MODE_HINTS: Record<string, string> = {
+  [ForwardMode.RELAY]: "relay 协议中继：多条规则共用出口端口，支持链路 TLS 与限流",
+  [ForwardMode.RAW]: "原生 TCP 直通：每条规则独立端口对，链路无自定义协议特征",
+};
 
 /** 审计动作（`entity.verb` 或独立动作名）→ 中文 + 语义色。 */
 const AUDIT_VERBS: Record<string, LabelInfo> = {
@@ -80,6 +86,7 @@ const AUDIT_ENTITIES: Record<string, string> = {
 const AUDIT_ACTION_OVERRIDES: Record<string, LabelInfo> = {
   subscribe: { label: "订阅套餐", tone: "accent" },
   "settings.tls_domain": { label: "TLS 域名设置", tone: "accent" },
+  "me.update_password": { label: "修改密码", tone: "warning" },
 };
 
 export function auditActionLabel(action: string): LabelInfo {

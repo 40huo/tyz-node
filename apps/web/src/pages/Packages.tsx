@@ -1,5 +1,5 @@
 import { Button, Table } from "@heroui/react";
-import { IconPlus } from "@tabler/icons-react";
+import { IconPencil, IconPlus, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CreatePackageInput, Package, RelayNode, Tunnel } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
@@ -7,6 +7,7 @@ import { api } from "../api";
 import { confirmDanger } from "../confirm";
 import { formatBytes } from "../format";
 import {
+  DataText,
   emptyState,
   type FormErrors,
   FormFooter,
@@ -14,12 +15,11 @@ import {
   FormShell,
   fail,
   hasErrors,
+  IconAction,
   ListToolbar,
-  Mono,
   NumberForm,
   PageHeader,
   PageShell,
-  RowButton,
   SearchInput,
   SelectForm,
   StatusChip,
@@ -247,7 +247,7 @@ export default function PackagesPage() {
                 {(pkg) => (
                   <Table.Row id={pkg.id}>
                     <Table.Cell>
-                      <Mono>{pkg.id}</Mono>
+                      <DataText>{pkg.id}</DataText>
                     </Table.Cell>
                     <Table.Cell>
                       <span className="font-medium">
@@ -256,11 +256,11 @@ export default function PackagesPage() {
                       </span>
                     </Table.Cell>
                     <Table.Cell>
-                      <Mono>{formatBytes(pkg.traffic_bytes)}</Mono>
+                      <DataText>{formatBytes(pkg.traffic_bytes)}</DataText>
                     </Table.Cell>
                     <Table.Cell>
                       {pkg.period_days > 0 ? (
-                        <Mono>{pkg.period_days} 天</Mono>
+                        <DataText>{pkg.period_days} 天</DataText>
                       ) : (
                         <StatusChip tone="accent">永久</StatusChip>
                       )}
@@ -277,18 +277,22 @@ export default function PackagesPage() {
                       )}
                     </Table.Cell>
                     <Table.Cell>
-                      <div className="flex justify-end gap-1">
-                        <RowButton onPress={() => setEditing(pkg)}>编辑</RowButton>
-                        <RowButton
-                          danger
+                      <div className="flex justify-end gap-0.5">
+                        <IconAction
+                          label="编辑"
+                          icon={<IconPencil size={16} stroke={2} />}
+                          onPress={() => setEditing(pkg)}
+                        />
+                        <IconAction
+                          label="删除"
+                          tone="danger"
+                          icon={<IconTrash size={16} stroke={2} />}
                           onPress={() =>
                             confirmDanger("删除套餐", "有活跃订阅时无法删除，确定继续？", () =>
                               deleteMutation.mutate(pkg.id),
                             )
                           }
-                        >
-                          删除
-                        </RowButton>
+                        />
                       </div>
                     </Table.Cell>
                   </Table.Row>

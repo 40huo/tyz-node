@@ -18,8 +18,10 @@ import {
   Select,
   Skeleton,
   Spinner,
+  Tabs,
   TextArea,
   TextField,
+  Tooltip,
   toast,
 } from "@heroui/react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -29,9 +31,9 @@ export const fail = (error: unknown) => toast.danger(error instanceof Error ? er
 
 export const cn = (...parts: Array<string | false | null | undefined>) => parts.filter(Boolean).join(" ");
 
-/** Monospace inline text for IDs, addresses, ports. */
-export function Mono({ className, children }: { className?: string; children: ReactNode }) {
-  return <span className={cn("font-mono text-xs", className)}>{children}</span>;
+/** 数据值（ID/地址/端口/流量/时间戳）：正常字体；tabular-nums 让表格数字等宽，刷新时不抖动。 */
+export function DataText({ className, children }: { className?: string; children: ReactNode }) {
+  return <span className={cn("text-xs tabular-nums", className)}>{children}</span>;
 }
 
 // ---- Form state ----
@@ -74,7 +76,9 @@ export function TextForm({
 }) {
   const Control = multiline ? TextArea : Input;
   return (
-    <TextField {...props} isInvalid={!!error} className={cn("w-full", className)}>
+    // secondary（灰底填充）：表单都在 Modal/Card 的白色 surface 上，主题的 field 又是白底透明边，
+    // primary 会完全融进背景；放在 spread 前允许个别场景覆盖回 primary
+    <TextField variant="secondary" {...props} isInvalid={!!error} className={cn("w-full", className)}>
       <Label>{label}</Label>
       <Control {...inputProps} placeholder={placeholder} />
       {error ? <FieldError>{error}</FieldError> : hint ? <Description>{hint}</Description> : null}
@@ -95,7 +99,15 @@ export function NumberForm({
   className?: string;
 }) {
   return (
-    <NumberField {...props} isInvalid={!!error} className={cn("w-full", className)}>
+    // formatOptions 放在 spread 前：默认关掉千分位分组（端口/字节等输入值不该出现 16,900），调用方仍可覆盖；
+    // variant=secondary 同 TextForm 的说明
+    <NumberField
+      formatOptions={{ useGrouping: false }}
+      variant="secondary"
+      {...props}
+      isInvalid={!!error}
+      className={cn("w-full", className)}
+    >
       <Label>{label}</Label>
       {/* Group 默认按 40px|1fr|40px 给步进按钮预留轨道；不渲染按钮时输入框会落进 40px 首轨被截成 ~1 个字符， */}
       {/* 塌缩为单列让输入框占满整行（工具类在 utilities 层，可覆盖 components 层的组件样式） */}
@@ -132,6 +144,7 @@ export function SelectForm({
 }) {
   return (
     <Select
+      variant="secondary"
       {...props}
       selectionMode={multiple ? "multiple" : "single"}
       placeholder={placeholder}
@@ -327,7 +340,10 @@ export function emptyState(text: string) {
 
 export type ChipTone = ComponentProps<typeof Chip>["color"];
 
-/** 全站统一的状态 Chip：文案与色值由 labels.ts 的映射提供。 */
+/**
+ * 全站统一的状态 Chip：文案与色值由 labels.ts 的映射提供。
+ * 传 `title` 时以 HeroUI Tooltip 呈现悬停说明（原生 title 是系统样式、延迟高且不可换行，不用）。
+ */
 export function StatusChip({
   tone = "default",
   icon,
@@ -341,13 +357,24 @@ export function StatusChip({
   className?: string;
   children: ReactNode;
 }) {
-  return (
-    <Chip color={tone} variant="soft" size="sm" className={className} title={title}>
+  const chip = (
+    <Chip color={tone} variant="soft" size="sm" className={className}>
       <Chip.Label className="flex items-center gap-1">
         {icon}
         {children}
       </Chip.Label>
     </Chip>
+  );
+  if (title === undefined) return chip;
+  return (
+    <Tooltip delay={0}>
+      {/* RAC 的 TooltipTrigger 把 hover 处理器放在 FocusableProvider context 里，只有消费
+          context 的组件（Button、Tooltip.Trigger）能收到；Chip 不消费，必须经 Tooltip.Trigger 桥接 */}
+      <Tooltip.Trigger>{chip}</Tooltip.Trigger>
+      <Tooltip.Content>
+        <p>{title}</p>
+      </Tooltip.Content>
+    </Tooltip>
   );
 }
 
@@ -374,40 +401,44 @@ export function SearchInput({
   );
 }
 
-/** 状态筛选 chip 组：value 为当前选中项（含“全部”哨兵值）。 */
-export function FilterChips<T extends string>({
+/**
+ * 状态筛选：分段控制器（Tabs）——选中项胶囊高亮，观感与控制台的时间范围切换一致，
+ * 支持方向键切换。value 含“全部”哨兵值，count 渲染为小号计数。
+ */
+export function FilterTabs<T extends string>({
   options,
   value,
   onChange,
+  label = "筛选",
 }: {
   options: { value: T; label: string; count?: number }[];
   value: T;
   onChange: (value: T) => void;
+  /** 无障碍标签（aria-label）。 */
+  label?: string;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {options.map((option) => (
-        <Button
-          key={option.value}
-          variant="ghost"
-          size="sm"
-          className={cn(
-            "h-8 rounded-full px-3 font-normal",
-            option.value === value && "bg-accent-soft font-medium text-accent-soft-foreground",
-          )}
-          onPress={() => onChange(option.value)}
-        >
-          {option.label}
-          {option.count !== undefined && <span className="text-xs opacity-70">{option.count}</span>}
-        </Button>
-      ))}
-    </div>
+    <Tabs
+      aria-label={label}
+      selectedKey={value}
+      onSelectionChange={(key) => onChange(key as T)}
+      className="w-fit shrink-0"
+    >
+      <Tabs.List>
+        {options.map((option) => (
+          <Tabs.Tab key={option.value} id={option.value} className="whitespace-nowrap">
+            {option.label}
+            {option.count !== undefined && <span className="ml-1.5 text-xs opacity-60">{option.count}</span>}
+          </Tabs.Tab>
+        ))}
+      </Tabs.List>
+    </Tabs>
   );
 }
 
-/** 列表页工具栏：搜索 + 筛选 chip 的水平容器。 */
+/** 列表页工具栏：筛选 + 搜索靠右对齐（全站约定；窄屏自动换行）。 */
 export function ListToolbar({ children }: { children: ReactNode }) {
-  return <div className="flex flex-wrap items-center gap-2">{children}</div>;
+  return <div className="flex flex-wrap items-center justify-end gap-2">{children}</div>;
 }
 
 // ---- CRUD helpers ----
@@ -470,13 +501,48 @@ export function FormFooter({
 
 // ---- Buttons ----
 
-/** Row-action button for tables: HeroUI ghost sm 默认外观，danger 仅换色。 */
-export function RowButton({
-  danger,
+const ICON_ACTION_TONES = {
+  default: { variant: "tertiary", className: "" },
+  success: { variant: "tertiary", className: "text-success" },
+  warning: { variant: "tertiary", className: "text-warning" },
+  danger: { variant: "danger-soft", className: "" },
+} as const;
+
+/**
+ * 表格行内图标动作：带底色圆圈（tertiary 灰底 / danger-soft 红底）+ 悬停提示说明用途
+ * （HeroUI Button 直接就是合法的 Tooltip trigger）。主题 radius 是 small 档，
+ * icon-only 默认是圆角方块，rounded-full 才是官网示例的圆圈形态。
+ */
+export function IconAction({
+  label,
+  icon,
+  tone = "default",
   className,
   ...props
-}: Omit<ComponentProps<typeof Button>, "className"> & { danger?: boolean; className?: string }) {
-  return <Button variant="ghost" size="sm" className={cn(danger && "text-danger", className)} {...props} />;
+}: Omit<ComponentProps<typeof Button>, "children" | "className"> & {
+  label: string;
+  icon: ReactNode;
+  tone?: keyof typeof ICON_ACTION_TONES;
+  className?: string;
+}) {
+  const conf = ICON_ACTION_TONES[tone];
+  return (
+    <Tooltip delay={0}>
+      <Button
+        isIconOnly
+        variant={conf.variant}
+        size="sm"
+        aria-label={label}
+        className={cn("rounded-full", conf.className, className)}
+        {...props}
+      >
+        {icon}
+      </Button>
+      <Tooltip.Content>
+        <p>{label}</p>
+      </Tooltip.Content>
+    </Tooltip>
+  );
 }
 
 export function SubmitButton({

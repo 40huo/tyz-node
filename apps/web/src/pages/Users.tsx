@@ -1,5 +1,5 @@
 import { Button, ProgressBar, Separator, Table, toast } from "@heroui/react";
-import { IconPlus } from "@tabler/icons-react";
+import { IconBan, IconCircleCheck, IconCreditCard, IconEye, IconPlus, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type UserDetail, type UserListItem, UserStatus } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
@@ -9,16 +9,16 @@ import { confirmDanger } from "../confirm";
 import { formatBytes } from "../format";
 import { quotaStopReasonLabel, userStatusLabel } from "../labels";
 import {
+  DataText,
   emptyState,
   FormFooter,
   FormModal,
   FormShell,
   fail,
+  IconAction,
   ListToolbar,
-  Mono,
   PageHeader,
   PageShell,
-  RowButton,
   SearchInput,
   SelectForm,
   StatusChip,
@@ -157,12 +157,12 @@ function UserDetailDialog({
               {d.subscription ? (
                 <p className="mt-1 text-sm">
                   {d.subscription.pkg.name}
-                  <Mono className="ml-2 text-muted">
+                  <DataText className="ml-2 text-muted">
                     {d.subscription.pkg.traffic_bytes > 0 ? formatBytes(d.subscription.pkg.traffic_bytes) : "不限量"}
                     {d.subscription.subscription.expires_at
                       ? ` / 至 ${d.subscription.subscription.expires_at.slice(0, 10)}`
                       : " / 永久"}
-                  </Mono>
+                  </DataText>
                 </p>
               ) : (
                 <StatusChip tone="warning" className="mt-1">
@@ -188,7 +188,7 @@ function UserDetailDialog({
             <div>
               <div className="mb-1.5 flex items-center justify-between">
                 <p className="text-muted">共享流量额度（所有规则共用，按线路倍率计费）</p>
-                <Mono>{formatBytes(remaining)} 剩余</Mono>
+                <DataText>{formatBytes(remaining)} 剩余</DataText>
               </div>
               <ProgressBar value={Math.min(100, (remaining / total) * 100)} color="success">
                 <ProgressBar.Track>
@@ -223,11 +223,11 @@ function UserDetailDialog({
                       {(r) => (
                         <Table.Row id={r.rule_id}>
                           <Table.Cell>
-                            {r.rule_name} <Mono className="text-muted">#{r.rule_id}</Mono>
+                            {r.rule_name} <DataText className="text-muted">#{r.rule_id}</DataText>
                           </Table.Cell>
                           <Table.Cell>
                             <span className="flex justify-end">
-                              <Mono>{formatBytes(Math.max(r.used_bytes, 0))}</Mono>
+                              <DataText>{formatBytes(Math.max(r.used_bytes, 0))}</DataText>
                             </span>
                           </Table.Cell>
                         </Table.Row>
@@ -314,7 +314,7 @@ export default function UsersPage() {
                 {(u) => (
                   <Table.Row id={u.id}>
                     <Table.Cell>
-                      <Mono>{u.id}</Mono>
+                      <DataText>{u.id}</DataText>
                     </Table.Cell>
                     <Table.Cell>
                       <span className="font-medium">{u.name}</span>
@@ -333,14 +333,36 @@ export default function UsersPage() {
                       )}
                     </Table.Cell>
                     <Table.Cell>
-                      <div className="flex justify-end gap-1">
-                        <RowButton onPress={() => setDetailId(u.id)}>详情</RowButton>
-                        <RowButton onPress={() => setSubscribing(u)}>订阅</RowButton>
-                        <RowButton onPress={() => toggleMutation.mutate(u)}>
-                          {u.status === "active" ? "禁用" : "启用"}
-                        </RowButton>
-                        <RowButton
-                          danger
+                      <div className="flex justify-end gap-0.5">
+                        <IconAction
+                          label="详情"
+                          icon={<IconEye size={16} stroke={2} />}
+                          onPress={() => setDetailId(u.id)}
+                        />
+                        <IconAction
+                          label="订阅套餐"
+                          icon={<IconCreditCard size={16} stroke={2} />}
+                          onPress={() => setSubscribing(u)}
+                        />
+                        {u.status === "active" ? (
+                          <IconAction
+                            label="禁用"
+                            tone="warning"
+                            icon={<IconBan size={16} stroke={2} />}
+                            onPress={() => toggleMutation.mutate(u)}
+                          />
+                        ) : (
+                          <IconAction
+                            label="启用"
+                            tone="success"
+                            icon={<IconCircleCheck size={16} stroke={2} />}
+                            onPress={() => toggleMutation.mutate(u)}
+                          />
+                        )}
+                        <IconAction
+                          label="删除"
+                          tone="danger"
+                          icon={<IconTrash size={16} stroke={2} />}
                           onPress={() =>
                             confirmDanger(
                               "删除用户",
@@ -348,9 +370,7 @@ export default function UsersPage() {
                               () => deleteMutation.mutate(u.id),
                             )
                           }
-                        >
-                          删除
-                        </RowButton>
+                        />
                       </div>
                     </Table.Cell>
                   </Table.Row>

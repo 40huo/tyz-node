@@ -10,7 +10,7 @@ export default function NotFoundPage() {
     <PageShell>
       <PageHeader title="页面不存在" description="链接可能已过期，或地址输入有误" />
       <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border py-16">
-        <IconCompass size={30} stroke={1.7} className="text-muted" />
+        <IconCompass size={30} stroke={2} className="text-muted" />
         <p className="text-sm text-muted">要找的页面不在这里，可以回到控制台继续管理节点与隧道</p>
         <Button variant="secondary" onPress={() => navigate("/")}>
           返回控制台

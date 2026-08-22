@@ -1,16 +1,115 @@
-@import "@fontsource-variable/geist";
+@import "@fontsource-variable/inter";
 @import "tailwindcss";
 @import "@heroui/styles";
 
-/* 全局圆角统一为 small 档：组件与 Tailwind rounded-* 均派生自 --radius */
-:root {
+/*
+ * HeroUI 主题定制（theme builder 生成的黑白单色主题）：accent 即前景色（浅色黑 / 深色白），
+ * 语义色 success/warning/danger 保留彩色。派生 token（accent-soft/hover 等）由 HeroUI
+ * 经 color-mix 自动跟随。字体不用 builder 生成的 --font-sans: var(--font-inter)
+ * （项目里没有该变量），继续用下方 @theme 的 Inter + 系统 CJK 栈。
+ */
+:root,
+.light,
+.default,
+[data-theme="light"],
+[data-theme="default"] {
+  --accent: oklch(0 0 0);
+  --accent-foreground: oklch(99.11% 0 0);
+  --background: oklch(97.02% 0 0);
+  --border: oklch(90.00% 0 0);
+  --danger: oklch(0.573 0.2249 21.97);
+  --danger-foreground: oklch(98% 0.02 21.97);
+  --default: oklch(94.00% 0 0);
+  --default-foreground: oklch(21.03% 0.0059 0);
+  --field-background: oklch(100.00% 0 0);
+  --field-border: transparent;
+  --field-foreground: oklch(21.03% 0 0);
+  --field-placeholder: oklch(55.17% 0 0);
+  --focus: oklch(0 0 0);
+  --foreground: oklch(21.03% 0 0);
+  --muted: oklch(55.17% 0 0);
+  --overlay: oklch(100.00% 0 0);
+  --overlay-foreground: oklch(21.03% 0 0);
+  --scrollbar: oklch(87.10% 0 0);
+  --segment: oklch(100.00% 0 0);
+  --segment-foreground: oklch(21.03% 0 0);
+  --separator: oklch(92.00% 0 0);
+  --success: oklch(0.6277 0.1604 153.06);
+  --success-foreground: oklch(98% 0.016 153.06);
+  --surface: oklch(100.00% 0 0);
+  --surface-foreground: oklch(21.03% 0 0);
+  --surface-secondary: oklch(95.24% 0 0);
+  --surface-secondary-foreground: oklch(21.03% 0 0);
+  --surface-tertiary: oklch(93.73% 0 0);
+  --surface-tertiary-foreground: oklch(21.03% 0 0);
+  --warning: oklch(0.8446 0.1525 80.6);
+  --warning-foreground: oklch(15% 0.0457 80.6);
+  --accent-soft-foreground: oklch(0 0 0);
+
+  /* 全局圆角 small：组件与 Tailwind rounded-* 派生自 --radius；表单控件走 --field-radius（默认 ×1.5），一并钉到同档 */
   --radius: 0.25rem;
+  --field-radius: 0.25rem;
+}
+
+/*
+ * 卡片标题加重到 semibold：默认 font-medium 与描述（同为 text-sm）层次太弱，
+ * 数字密集的卡片（控制台）里标题压不住内容。规则在组件样式之后，同特异性按源序胜出。
+ */
+.card__title {
+  font-weight: 600;
+}
+
+.dark,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --accent: oklch(0.9848 0 0);
+  --accent-foreground: oklch(15% 0 0);
+  --background: oklch(12.00% 0 0);
+  --border: oklch(28.00% 0 0);
+  --danger: oklch(0.7044 0.1872 23.19);
+  --danger-foreground: oklch(15% 0.05 23.19);
+  --default: oklch(27.40% 0 0);
+  --default-foreground: oklch(99.11% 0 0);
+  --field-background: oklch(21.03% 0 0);
+  --field-border: transparent;
+  --field-foreground: oklch(99.11% 0 0);
+  --field-placeholder: oklch(70.50% 0 0);
+  --focus: oklch(0.9848 0 0);
+  --foreground: oklch(99.11% 0 0);
+  --muted: oklch(70.50% 0 0);
+  --overlay: oklch(21.03% 0 0);
+  --overlay-foreground: oklch(99.11% 0 0);
+  --scrollbar: oklch(70.50% 0 0);
+  --segment: oklch(39.64% 0 0);
+  --segment-foreground: oklch(99.11% 0 0);
+  --separator: oklch(25.00% 0 0);
+  --success: oklch(0.6514 0.1321 156.22);
+  --success-foreground: oklch(15% 0.0396 156.22);
+  --surface: oklch(21.03% 0 0);
+  --surface-foreground: oklch(99.11% 0 0);
+  --surface-secondary: oklch(25.70% 0 0);
+  --surface-secondary-foreground: oklch(99.11% 0 0);
+  --surface-tertiary: oklch(27.21% 0 0);
+  --surface-tertiary-foreground: oklch(99.11% 0 0);
+  --warning: oklch(0.8803 0.1348 86.06);
+  --warning-foreground: oklch(15% 0.0404 86.06);
+  --accent-soft-foreground: oklch(0.9848 0 0);
 }
 
 @theme {
-  /* Latin 走 Geist（可变字重，数字与英文更紧凑），CJK 回落 Noto Sans SC */
+  /*
+   * 中文后台字体惯例（AntD/Arco/TDesign 同款）：CJK 用系统字体（Mac 苹方 / Win 微软雅黑），
+   * 捆绑的 Noto Sans SC 只在系统没有中文字体时兜底（无头 Linux）——排在系统字体后面，
+   * 有系统字体的平台不会触发 webfont 下载。
+   * Latin/数字走 Inter 可变字重（数据密集后台的主流 UI 字体），跨平台观感一致。
+   */
   --font-sans:
-    "Geist Variable", "Noto Sans SC", -apple-system, "Segoe UI", sans-serif;
+    "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC",
+    sans-serif;
+  /* 等宽走系统默认栈；末尾挂捆绑的 Noto 兜底 Mono 文本里的 CJK（如「入/出」），无头 Linux 不出豆腐块 */
+  --font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans SC", monospace;
 }
 
 @layer base {

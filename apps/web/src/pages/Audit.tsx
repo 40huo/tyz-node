@@ -4,10 +4,10 @@ import { useMemo, useState } from "react";
 import { api } from "../api";
 import { auditActionLabel } from "../labels";
 import {
+  DataText,
   emptyState,
-  FilterChips,
+  FilterTabs,
   ListToolbar,
-  Mono,
   PageHeader,
   Pager,
   PageShell,
@@ -85,8 +85,7 @@ export default function AuditPage() {
     <PageShell>
       <PageHeader title="操作审计" description="管理端写操作留痕（保留 180 天）；敏感值只记录操作本身" />
       <ListToolbar>
-        <SearchInput value={search} onChange={setSearch} placeholder="搜索操作者 / 详情" />
-        <FilterChips options={ACTION_FILTERS} value={actionFilter} onChange={setActionFilter} />
+        <FilterTabs label="动作筛选" options={ACTION_FILTERS} value={actionFilter} onChange={setActionFilter} />
         <Select
           aria-label="时间范围"
           value={timeRange}
@@ -108,6 +107,7 @@ export default function AuditPage() {
             </ListBox>
           </Select.Popover>
         </Select>
+        <SearchInput value={search} onChange={setSearch} placeholder="搜索操作者 / 详情" />
       </ListToolbar>
       {auditQuery.isError ? (
         <TableError onRetry={() => auditQuery.refetch()} />
@@ -141,7 +141,7 @@ export default function AuditPage() {
                 {(r) => (
                   <Table.Row id={r.id}>
                     <Table.Cell>
-                      <Mono>{r.ts.replace("T", " ").slice(0, 19)}</Mono>
+                      <DataText>{r.ts.replace("T", " ").slice(0, 19)}</DataText>
                     </Table.Cell>
                     <Table.Cell>{r.actor}</Table.Cell>
                     <Table.Cell>
@@ -151,9 +151,9 @@ export default function AuditPage() {
                     </Table.Cell>
                     <Table.Cell>
                       {r.target_type ? (
-                        <Mono>
+                        <DataText>
                           {r.target_type} #{r.target_id}
-                        </Mono>
+                        </DataText>
                       ) : (
                         "-"
                       )}

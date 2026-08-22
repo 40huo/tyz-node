@@ -1,5 +1,5 @@
 import { Button, Table } from "@heroui/react";
-import { IconPlus } from "@tabler/icons-react";
+import { IconPencil, IconPlus, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type CreateEndpointInput, type Endpoint, type EndpointWithMeta, endpointAddress } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
@@ -7,6 +7,7 @@ import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
 import {
+  DataText,
   emptyState,
   type FormErrors,
   FormFooter,
@@ -14,12 +15,11 @@ import {
   FormShell,
   fail,
   hasErrors,
+  IconAction,
   ListToolbar,
-  Mono,
   NumberForm,
   PageHeader,
   PageShell,
-  RowButton,
   SearchInput,
   StatusChip,
   TableError,
@@ -202,13 +202,13 @@ export default function EndpointsPage() {
                 {(e) => (
                   <Table.Row id={e.id}>
                     <Table.Cell>
-                      <Mono>{e.id}</Mono>
+                      <DataText>{e.id}</DataText>
                     </Table.Cell>
                     <Table.Cell>
                       <span className="font-medium">{e.name}</span>
                     </Table.Cell>
                     <Table.Cell>
-                      <Mono>{endpointAddress(e.host, e.port)}</Mono>
+                      <DataText>{endpointAddress(e.host, e.port)}</DataText>
                     </Table.Cell>
                     <Table.Cell>
                       {e.rule_count > 0 ? (
@@ -221,18 +221,22 @@ export default function EndpointsPage() {
                       <span className="text-xs text-muted">{e.note || "-"}</span>
                     </Table.Cell>
                     <Table.Cell>
-                      <div className="flex justify-end gap-1">
-                        <RowButton onPress={() => setEditing(e)}>编辑</RowButton>
-                        <RowButton
-                          danger
+                      <div className="flex justify-end gap-0.5">
+                        <IconAction
+                          label="编辑"
+                          icon={<IconPencil size={16} stroke={2} />}
+                          onPress={() => setEditing(e)}
+                        />
+                        <IconAction
+                          label="删除"
+                          tone="danger"
+                          icon={<IconTrash size={16} stroke={2} />}
                           onPress={() =>
                             confirmDanger("删除目标端点", "有规则引用时无法删除，确定继续？", () =>
                               deleteMutation.mutate(e.id),
                             )
                           }
-                        >
-                          删除
-                        </RowButton>
+                        />
                       </div>
                     </Table.Cell>
                   </Table.Row>

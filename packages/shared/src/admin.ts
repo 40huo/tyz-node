@@ -45,6 +45,13 @@ export interface SetupStatusResponse {
   schema_ready: boolean;
 }
 
+/** PUT /api/admin/me/password body: change the logged-in admin's own password. */
+export const changePasswordSchema = z.object({
+  old_password: z.string().min(1),
+  new_password: z.string().min(8, "密码至少 8 位").max(128),
+});
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+
 // ---- Node CRUD ----
 
 const tlsConfigInputSchema = z.object({

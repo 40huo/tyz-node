@@ -2,6 +2,7 @@ import type {
   AdminRuleRow,
   AuditRow,
   Chain,
+  ChangePasswordInput,
   CreateChainInput,
   CreateEndpointInput,
   CreateNodeInput,
@@ -73,6 +74,11 @@ export const api = {
     request<{ ok: true; username: string }>("/api/admin/login", jsonBody({ username, password })),
   logout: () => request<{ ok: true }>("/api/admin/logout", { method: "POST" }),
   me: () => request<{ username: string }>("/api/admin/me"),
+  changePassword: (input: ChangePasswordInput) =>
+    request<{ ok: true }>("/api/admin/me/password", {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
   setupStatus: () => request<SetupStatusResponse>("/api/setup/status"),
   initSetup: (input: SetupInput) => request<{ ok: true; username: string }>("/api/setup", jsonBody(input)),
 
