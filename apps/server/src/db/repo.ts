@@ -93,7 +93,6 @@ export const nodeEntityColumns = {
   egress_traffic: relayNodes.egress_traffic,
   ingress_traffic: relayNodes.ingress_traffic,
   traffic_limit: relayNodes.traffic_limit,
-  enlarge_scale: relayNodes.enlarge_scale,
   rate: relayNodes.rate,
   ports: relayNodes.ports,
   custom_cfg: relayNodes.custom_cfg,

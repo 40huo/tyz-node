@@ -79,7 +79,6 @@ export const relayNodePayloadSchema = z.object({
   egress_traffic: z.number().nonnegative(),
   ingress_traffic: z.number().nonnegative(),
   traffic_limit: z.number().nonnegative(),
-  enlarge_scale: z.number().nonnegative(),
   rate: z.number().min(0.1).max(100).default(1),
   ports: z.string().regex(/^\d+-\d+$/, "ports must look like '10000-20000'"),
   custom_cfg: z.unknown().optional(),

@@ -3,9 +3,12 @@
 -- This file is the COMPLETE current schema. History note: it squashes the
 -- original incremental migrations (init / service health / quota packages /
 -- traffic ledger + audit / rate + metrics / relay modes + link TLS / target
--- endpoints). Apply on a FRESH database; environments that already applied
--- the old numbered migrations must NOT re-apply this file (wrangler tracks
--- by filename).
+-- endpoints) and the later numbered steps (user roles + login credentials /
+-- plaintext node tokens / enlarge_scale column drop / in-chain port zeroing —
+-- the last was data-only and dissolves into a fresh baseline). Apply on a
+-- FRESH database; environments that already applied any earlier numbered
+-- chain are already at this final state and must NOT re-apply this file
+-- (wrangler tracks by filename).
 
 CREATE TABLE relay_nodes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -13,16 +16,17 @@ CREATE TABLE relay_nodes (
   description TEXT,
   address TEXT NOT NULL,
   display_address TEXT,
-  -- sha256(TOKEN_SALT + token), hex encoded; the raw token is only shown once at creation
-  token_hash TEXT NOT NULL UNIQUE,
-  token_hint TEXT NOT NULL DEFAULT '', -- last 4 chars of the token, for display
+  -- Plaintext node token (the panel is the trust domain; rotate on suspicion)
+  -- + last 4 chars for masked display. Databases from the pre-plaintext era
+  -- may hold inert legacy sha256 strings in this column until rotated.
+  token TEXT NOT NULL UNIQUE,
+  token_hint TEXT NOT NULL DEFAULT '',
   level INTEGER NOT NULL DEFAULT 0,
   is_public INTEGER NOT NULL DEFAULT 0,
   version TEXT,
   egress_traffic INTEGER NOT NULL DEFAULT 0,
   ingress_traffic INTEGER NOT NULL DEFAULT 0,
   traffic_limit INTEGER NOT NULL DEFAULT 0,
-  enlarge_scale INTEGER NOT NULL DEFAULT 1,
   rate REAL NOT NULL DEFAULT 1.0, -- line billing multiplier: users are charged round(real x rate)
   ports TEXT NOT NULL DEFAULT '10000-20000',
   custom_cfg TEXT, -- JSON
@@ -32,13 +36,21 @@ CREATE TABLE relay_nodes (
 );
 
 -- Tenants owning relay rules; quota and access rights come from the subscription.
+-- role/password_hash sit AFTER updated_at to keep column order identical with
+-- databases that received them via ALTER TABLE ADD COLUMN.
 CREATE TABLE users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   note TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  -- Platform operators are role='admin' rows created via the first-run /setup
+  -- wizard (multiple allowed); business tenants are role='user'. password_hash
+  -- (salted single-step sha256, NULL = cannot log in) NEVER appears in API
+  -- responses or audit rows.
+  role TEXT NOT NULL DEFAULT 'user',
+  password_hash TEXT
 );
 
 CREATE TABLE tunnels (
@@ -75,7 +87,10 @@ CREATE TABLE chains (
   transport TEXT NOT NULL CHECK (transport IN ('raw', 'ws', 'tls', 'grpc', 'wss', 'mtls', 'mwss')),
   idx INTEGER NOT NULL, -- order in the chain (maps to entity field `index`)
   strategy TEXT NOT NULL DEFAULT 'round',
-  port INTEGER NOT NULL DEFAULT 0, -- 0 = auto-allocate from the node's port range
+  -- Port of this row's node-side listener / dial target. IN rows never carry
+  -- a port (0): entry services listen on each rule's listen_port. The admin
+  -- API forces 0 on in-row writes.
+  port INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

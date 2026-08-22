@@ -54,7 +54,6 @@ export interface RelayNode {
   egress_traffic: number;
   ingress_traffic: number;
   traffic_limit: number;
-  enlarge_scale: number;
   /** Traffic billing multiplier: charged bytes = round(real × rate). */
   rate: number;
   ports: string; // e.g., "10000-20000"

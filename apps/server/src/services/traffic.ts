@@ -35,42 +35,54 @@ interface HourBucket {
   download: number;
 }
 
-/** Fold one node's stats samples into the hourly ledger (best effort). */
+/**
+ * Fold one node's stats samples into the hourly ledger (best effort), plus the
+ * observation counters on relay_nodes/relay_rules (display-only, resettable —
+ * see POST /rules/:id/reset-traffic). Multi-node rule usage is the SUM over
+ * every node serving the rule: raw-mode exits report under the same
+ * service-{ruleId} name as the entry.
+ */
 export async function ingestTraffic(db: Database, nodeId: number, samples: GostStatsSample[]): Promise<void> {
   const serviceSamples = samples.filter((s) => !s.client);
   await rollupServiceMetrics(db, nodeId, serviceSamples);
+  if (serviceSamples.length === 0) return;
 
   // Service-level rows only; per-client rows are breakdowns of the same
-  // traffic. Exit relay services (service-t{tunnelId}) do not parse as rule
-  // ids and are skipped by the regex.
-  const ruleSamples = serviceSamples.filter((s) => /^service-(\d+)$/.test(s.service) && Number(s.service.slice(8)) > 0);
-  if (ruleSamples.length === 0) return;
+  // traffic. Shared exit listeners (service-t{tunnelId}) do not parse as rule
+  // ids and are excluded from the RULE ledger/buckets — they still count
+  // toward the node's own totals.
+  const isRuleService = (name: string) => /^service-(\d+)$/.test(name) && Number(name.slice(8)) > 0;
 
-  // The node's billing rate: charged bytes = round(real x rate).
-  const node = await db.select({ rate: relayNodes.rate }).from(relayNodes).where(eq(relayNodes.id, nodeId)).get();
-  const rate = node?.rate ?? 1.0;
-
-  const names = [...new Set(ruleSamples.map((s) => s.service))];
+  // Deltas are computed for EVERY service (shared exits included): the node
+  // totals need them, which is also why traffic_counters now tracks
+  // service-t* rows.
+  const names = [...new Set(serviceSamples.map((s) => s.service))];
   const counterRows = await db
     .select()
     .from(trafficCounters)
     .where(and(eq(trafficCounters.node_id, nodeId), inArray(trafficCounters.service, names)));
   const last = new Map(counterRows.map((c) => [c.service, { upload: c.upload, download: c.download }]));
 
-  const ruleIds = [...new Set(ruleSamples.map((s) => Number(s.service.slice(8))))];
-  const ruleRows = await db
-    .select({ id: relayRules.id, user_id: relayRules.user_id })
-    .from(relayRules)
-    .where(inArray(relayRules.id, ruleIds));
+  const ruleIds = [
+    ...new Set(serviceSamples.filter((s) => isRuleService(s.service)).map((s) => Number(s.service.slice(8)))),
+  ];
+  const ruleRows =
+    ruleIds.length > 0
+      ? await db
+          .select({ id: relayRules.id, user_id: relayRules.user_id })
+          .from(relayRules)
+          .where(inArray(relayRules.id, ruleIds))
+      : [];
   const ownerOf = new Map(ruleRows.map((r) => [r.id, r.user_id ?? 0]));
 
   const now = new Date().toISOString();
   const hourTs = hourFloorIso(now);
   const buckets = new Map<number, HourBucket>(); // key: ruleId (single hour per batch)
   const counterUpdates = new Map<string, { upload: number; download: number }>();
+  let nodeIngress = 0;
+  let nodeEgress = 0;
 
-  for (const s of ruleSamples) {
-    const ruleId = Number(s.service.slice(8));
+  for (const s of serviceSamples) {
     const prev = last.get(s.service);
     let dUp = s.inputBytes;
     let dDown = s.outputBytes;
@@ -83,7 +95,12 @@ export async function ingestTraffic(db: Database, nodeId: number, samples: GostS
     last.set(s.service, { upload: s.inputBytes, download: s.outputBytes });
     counterUpdates.set(s.service, { upload: s.inputBytes, download: s.outputBytes });
 
+    nodeIngress += dUp;
+    nodeEgress += dDown;
+
+    if (!isRuleService(s.service)) continue;
     if (dUp <= 0 && dDown <= 0) continue;
+    const ruleId = Number(s.service.slice(8));
     const bucket = buckets.get(ruleId) ?? {
       ruleId,
       userId: ownerOf.get(ruleId) ?? 0,
@@ -96,29 +113,36 @@ export async function ingestTraffic(db: Database, nodeId: number, samples: GostS
     buckets.set(ruleId, bucket);
   }
 
-  // Ledger first (see the file comment for the crash-ordering rationale).
-  for (const b of buckets.values()) {
-    await db
-      .insert(trafficHourly)
-      .values({
-        rule_id: b.ruleId,
-        user_id: b.userId,
-        node_id: nodeId,
-        hour_ts: b.hourTs,
-        real_upload: b.upload,
-        real_download: b.download,
-        billed_upload: Math.round(b.upload * rate),
-        billed_download: Math.round(b.download * rate),
-      })
-      .onConflictDoUpdate({
-        target: [trafficHourly.rule_id, trafficHourly.hour_ts],
-        set: {
-          real_upload: sql`${trafficHourly.real_upload} + excluded.real_upload`,
-          real_download: sql`${trafficHourly.real_download} + excluded.real_download`,
-          billed_upload: sql`${trafficHourly.billed_upload} + excluded.billed_upload`,
-          billed_download: sql`${trafficHourly.billed_download} + excluded.billed_download`,
-        },
-      });
+  // Ledger first (see the file comment for the crash-ordering rationale) —
+  // billing stays authoritative; the observation columns below are best
+  // effort and a crash between the two only loses display bytes.
+  if (buckets.size > 0) {
+    // The node's billing rate: charged bytes = round(real x rate).
+    const node = await db.select({ rate: relayNodes.rate }).from(relayNodes).where(eq(relayNodes.id, nodeId)).get();
+    const rate = node?.rate ?? 1.0;
+    for (const b of buckets.values()) {
+      await db
+        .insert(trafficHourly)
+        .values({
+          rule_id: b.ruleId,
+          user_id: b.userId,
+          node_id: nodeId,
+          hour_ts: b.hourTs,
+          real_upload: b.upload,
+          real_download: b.download,
+          billed_upload: Math.round(b.upload * rate),
+          billed_download: Math.round(b.download * rate),
+        })
+        .onConflictDoUpdate({
+          target: [trafficHourly.rule_id, trafficHourly.hour_ts],
+          set: {
+            real_upload: sql`${trafficHourly.real_upload} + excluded.real_upload`,
+            real_download: sql`${trafficHourly.real_download} + excluded.real_download`,
+            billed_upload: sql`${trafficHourly.billed_upload} + excluded.billed_upload`,
+            billed_download: sql`${trafficHourly.billed_download} + excluded.billed_download`,
+          },
+        });
+    }
   }
   for (const [service, c] of counterUpdates) {
     await db
@@ -128,6 +152,28 @@ export async function ingestTraffic(db: Database, nodeId: number, samples: GostS
         target: [trafficCounters.node_id, trafficCounters.service],
         set: { upload: sql`excluded.upload`, download: sql`excluded.download`, updated_at: sql`excluded.updated_at` },
       });
+  }
+
+  // Observation counters: per-rule (sums every node's leg) and per-node (all
+  // services, shared exits included). Plain increments — resettable without
+  // touching the ledger above.
+  for (const b of buckets.values()) {
+    await db
+      .update(relayRules)
+      .set({
+        upload_traffic: sql`${relayRules.upload_traffic} + ${b.upload}`,
+        download_traffic: sql`${relayRules.download_traffic} + ${b.download}`,
+      })
+      .where(eq(relayRules.id, b.ruleId));
+  }
+  if (nodeIngress > 0 || nodeEgress > 0) {
+    await db
+      .update(relayNodes)
+      .set({
+        ingress_traffic: sql`${relayNodes.ingress_traffic} + ${nodeIngress}`,
+        egress_traffic: sql`${relayNodes.egress_traffic} + ${nodeEgress}`,
+      })
+      .where(eq(relayNodes.id, nodeId));
   }
 }
 
