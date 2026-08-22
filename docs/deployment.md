@@ -22,7 +22,7 @@
 
 ```
 ┌────────────────────────── Cloudflare ──────────────────────────┐
-│  Worker: tyz-node (Hono)                                     │
+│  Worker: tyz (Hono)                                           │
 │   ├─ /api/admin/* 管理面板 API + 静态托管 (React SPA)             │
 │   ├─ /api/agent/* 节点 API（Bearer NODE_TOKEN 认证）              │
 │   │            /api/agent/ws WebSocket 推送（NodePushDO）          │
@@ -44,7 +44,7 @@
 
 | 单元 | 位置 | 职责 |
 |---|---|---|
-| Worker `tyz-node` | Cloudflare 边缘 | 面板 API + SPA 托管、agent 配置下发（WS 推送优先）、统计接收、配额/续期巡检 |
+| Worker `tyz` | Cloudflare 边缘 | 面板 API + SPA 托管、agent 配置下发（WS 推送优先）、统计接收、配额/续期巡检 |
 | D1 数据库 `tyz` | Cloudflare | 全部业务数据（含计费台账 `traffic_hourly`，永不清理） |
 | `NodePushDO`（Durable Object） | 随 Worker | 每节点一个实例，WebSocket 休眠推送 |
 | agent 容器 | 每台节点机 | 内嵌 GOST 数据面：监听入口端口、转发/中继流量、执行限速与配额 |
@@ -101,11 +101,11 @@
 
 | 想改什么 | 改哪里 | 说明 |
 |---|---|---|
-| Worker 名 | 根目录 `wrangler.jsonc` 的 `name`（默认 `tyz-node`） | Dashboard 里创建的 Worker 名必须与它一致（见 3.3 的告警） |
+| Worker 名 | 根目录 `wrangler.jsonc` 的 `name`（`tyz`） | Dashboard 里创建的 Worker 名必须与它一致（见 3.3 的告警） |
 | D1 数据库名 | 根目录 `wrangler.jsonc` 的 `database_name`（默认 `tyz`） | 首次部署自动创建同名数据库；不需要填任何资源 ID |
 | 面板标题等 | `apps/web/` 源码 | 改完随下次部署自动生效 |
 
-**③ 接入 Workers Builds**：**Workers & Pages → Create → Worker → 连接 Git 仓库**，选择**你 fork 的仓库**与 `master` 分支，Worker 名保持 `tyz-node`（与 `wrangler.jsonc` 的 `name` 一致）。wrangler 配置就在**仓库根目录**，因此 Root directory 与构建变量都用默认，**需要手动填的是以下两项**：
+**③ 接入 Workers Builds**：**Workers & Pages → Create → Worker → 连接 Git 仓库**，选择**你 fork 的仓库**与 `master` 分支，Worker 名保持 `tyz`（与 `wrangler.jsonc` 的 `name` 一致）。wrangler 配置就在**仓库根目录**，因此 Root directory 与构建变量都用默认，**需要手动填的是以下两项**：
 
 | 设置 | 值 | 说明 |
 |---|---|---|
@@ -120,15 +120,13 @@
 
 部署完成后打开面板地址，按向导创建管理员账号（见 3.4），然后进入第 4 节初始化面板。
 
-> 建议：在 fork 的 **Settings → Actions** 中禁用 `deploy-server.yml`（fork 里没有 `CLOUDFLARE_*` secrets，跑了也会失败，还可能与 Workers Builds 形成双部署通道）。
-
 ### 3.3 手动接入 Workers Builds（直连原仓库）
 
 Workers Builds 的行为：push 到生产分支 → 跑**构建命令**（可选）→ 跑**部署命令**（默认 `npx wrangler deploy`）。**构建/部署命令只能在 Dashboard 配置，`wrangler.jsonc` 里的 `[build]` 块对 CI 不生效**。
 
 在 Cloudflare Dashboard：**Workers & Pages → Create → Worker**，选择**连接 Git 仓库**（而非 Hello World 模板），选择本仓库与生产分支 `master`。
 
-> ⚠️ **Worker 名字必须与 `wrangler.jsonc` 的 `name` 一致：`tyz-node`**。不一致是接入失败的常见原因（构建报错找不到/名字冲突）。
+> ⚠️ **Worker 名字必须与 `wrangler.jsonc` 的 `name` 一致：`tyz`**。不一致是接入失败的常见原因（构建报错找不到/名字冲突）。
 
 然后在 Worker 的 **Settings → Build** 按下表配置：
 
@@ -157,7 +155,7 @@ Workers Builds 的行为：push 到生产分支 → 跑**构建命令**（可选
 
 ### 3.5 绑定域名（推荐）
 
-- 默认可用 `https://tyz-node.<你的子域>.workers.dev`。注意 workers.dev 在部分地区/线路可达性不稳，而**节点机必须稳定访问控制面**（WS 长连接 + 配置拉取），隧道类业务建议绑定自定义域名。
+- 默认可用 `https://tyz.<你的子域>.workers.dev`。注意 workers.dev 在部分地区/线路可达性不稳，而**节点机必须稳定访问控制面**（WS 长连接 + 配置拉取），隧道类业务建议绑定自定义域名。
 - 绑定方式：Worker → **Settings → Domains & Routes → Add → Custom domain**，域名需是本账号 Cloudflare Zone 内的 DNS 记录（自动签发边缘证书，无需自己管 TLS）。
 - 绑定自定义域名后，可选在 `wrangler.jsonc` 加 `"workers_dev": false` 关闭 workers.dev 入口，收敛暴露面。
 
@@ -187,8 +185,7 @@ curl https://tyz.example.com/api/healthz        # → {"ok":true}
 
 ### 3.8 与仓库自带 GitHub Actions 的关系
 
-- `deploy-server.yml`（手动触发 / `v*` tag）与 Workers Builds 日常 push 不冲突；但为避免双部署通道造成误操作（比如打 tag 时两边同时部署），**接入 Workers Builds 后建议在仓库 Settings → Actions 中禁用该 workflow**（`.github/workflows/disabled` 或直接删除）。
-- `check.yml`（lint + 类型检查 + agent Go 测试 + 前端构建）与部署无关，保留。
+- 控制面部署**不走 GitHub Actions**：仓库里的 Actions 只有 `check.yml`（lint + 类型检查 + agent Go 测试 + 前端构建）和 `docker-build.yml`（agent 镜像构建发布），均与部署无关，fork 后可原样保留。
 
 ### 3.9 日常发布
 
@@ -491,7 +488,7 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql   # 仓库�
 
 | 症状 | 原因 | 处置 |
 |---|---|---|
-| 构建报 Worker 名不匹配 / 找不到 wrangler 配置 | Dashboard 的 Worker 名 ≠ `tyz-node`（配置在仓库根 `wrangler.jsonc`） | 名字改为 `tyz-node`（Settings → Build） |
+| 构建报 Worker 名不匹配 / 找不到 wrangler 配置 | Dashboard 的 Worker 名 ≠ `tyz`（配置在仓库根 `wrangler.jsonc`） | 名字改为 `tyz`（Settings → Build） |
 | 部署命令里跑迁移报 403/权限错误 | Workers Builds 的 token 无 D1:Edit | 见 3.7：本地跑迁移，或给 token 补 D1:Edit |
 | push 了但没触发构建 | 配置了 build watch paths 且路径不含改动文件 | 删掉 watch paths 配置（见 3.3） |
 | 连接仓库时构建命令没有自动填 | 预期行为：自动预填是 Deploy 按钮流程专属，手动连接只做框架探测（探测不到） | 手动填一条 Build command：`bun run build:web`（见 3.2/3.3） |

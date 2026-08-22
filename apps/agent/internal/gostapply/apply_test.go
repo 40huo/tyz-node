@@ -12,11 +12,11 @@ import (
 	xquota "github.com/go-gost/x/limiter/quota"
 	xlogger "github.com/go-gost/x/logger"
 	"github.com/go-gost/x/registry"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/builder"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/certs"
-	_ "github.com/laoshan-tech/tyz-node/apps/agent/internal/drivers"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/model"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/statsobs"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/builder"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/certs"
+	_ "github.com/laoshan-tech/tyz/apps/agent/internal/drivers"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/model"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/statsobs"
 )
 
 type sliceQueue struct{ samples []model.GostStatsSample }

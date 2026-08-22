@@ -7,8 +7,8 @@ import (
 	"net"
 
 	"github.com/go-gost/x/config"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/certs"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/model"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/certs"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/model"
 )
 
 func admissionName(tunnelID int) string { return fmt.Sprintf("admission-t%d", tunnelID) }

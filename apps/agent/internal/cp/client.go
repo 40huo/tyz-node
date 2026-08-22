@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/model"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/model"
 )
 
 const httpTimeout = 30 * time.Second

@@ -76,7 +76,7 @@ bunx wrangler deploy                        # 首次部署自动创建 D1（自�
 bun run db:migrate
 ```
 
-CI：`deploy-server.yml`（手动触发或 v* tag，需 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` secrets）；`check.yml`（lint + 类型检查 + agent Go vet/test + 前端构建）。
+CI：`check.yml`（lint + 类型检查 + agent Go vet/test + 前端构建）；`docker-build.yml`（agent 镜像发布）。控制面部署走 Cloudflare Workers Builds（fork 后在 Dashboard 接入，见 `docs/deployment.md`），不在 GitHub Actions 里。
 
 ### 节点机
 

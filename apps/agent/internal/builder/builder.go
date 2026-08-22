@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/go-gost/x/config"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/model"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/model"
 )
 
 // ObserverName is the name the in-process stats observer is registered under;

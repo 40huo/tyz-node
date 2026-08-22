@@ -38,7 +38,7 @@ import (
 	"github.com/go-gost/x/registry"
 	xservice "github.com/go-gost/x/service"
 
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/model"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/model"
 )
 
 type Applier struct {

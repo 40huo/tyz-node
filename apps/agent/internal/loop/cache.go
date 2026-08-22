@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/model"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/model"
 )
 
 // The local config cache lets the agent start serving tunnels when the

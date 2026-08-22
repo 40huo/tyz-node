@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-gost/core/observer"
 	"github.com/go-gost/x/observer/stats"
-	"github.com/laoshan-tech/tyz-node/apps/agent/internal/model"
+	"github.com/laoshan-tech/tyz/apps/agent/internal/model"
 )
 
 // Queue receives one flattened sample per stats event.
