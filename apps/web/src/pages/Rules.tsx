@@ -17,6 +17,7 @@ import { type FormEvent, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
+import { formatTraffic } from "../format";
 import { quotaStopReasonLabel, ruleStatusLabel } from "../labels";
 import {
   emptyState,
@@ -174,6 +175,7 @@ function RuleForm({
     if (!values.name.trim()) errs.name = "请输入名称";
     if (!values.endpoint_id && !values.targets.trim()) errs.targets = "请输入目标地址";
     if (values.listen_port < 1 || values.listen_port > 65535) errs.listen_port = "端口范围 1-65535";
+    if (!values.tunnel_id) errs.tunnel_id = "请选择隧道（单节点直转请先创建仅含入口链路的隧道）";
     const limitError = validateLimitText(values.limitText);
     if (limitError) errs.limitText = limitError;
     setErrors(errs);
@@ -188,7 +190,8 @@ function RuleForm({
       targets: selectedEndpoint ? endpointAddress(selectedEndpoint.host, selectedEndpoint.port) : values.targets,
       status: values.status as RelayRuleStatus,
       description: values.description || undefined,
-      tunnel_id: values.tunnel_id ? Number(values.tunnel_id) : null,
+      // 表单校验保证非空（隧道为必选项）。
+      tunnel_id: Number(values.tunnel_id ?? 0),
       user_id: values.user_id ? Number(values.user_id) : null,
       exit_port: values.exit_port,
       limit: values.limitText.trim() === "" ? null : (JSON.parse(values.limitText) as CreateRuleInput["limit"]),
@@ -244,13 +247,13 @@ function RuleForm({
       <div className="grid grid-cols-2 gap-3">
         <SelectForm
           label="所属隧道"
-          placeholder="不指定（直连转发）"
-          options={[
-            { value: "", label: "不指定（直连转发）" },
-            ...tunnels.map((t) => ({ value: String(t.id), label: `${t.name} (#${t.id})` })),
-          ]}
+          isRequired
+          placeholder="选择隧道"
+          hint="规则必须挂在隧道下才会部署到节点；单节点直转 = 仅含入口链路的隧道"
+          options={tunnels.map((t) => ({ value: String(t.id), label: `${t.name} (#${t.id})` }))}
           value={values.tunnel_id}
           onChange={(v) => set("tunnel_id", (v as string | null) ?? null)}
+          error={errors.tunnel_id}
         />
         <SelectForm
           label="所属用户"
@@ -330,6 +333,14 @@ export default function RulesPage() {
     onSuccess: (res) => toast(`重启指令已下发（${res.nodes} 个节点）：现有连接将被断开并立即重建监听`),
     onError: fail,
   });
+  const resetTrafficMutation = useMutation({
+    mutationFn: api.resetRuleTraffic,
+    onSuccess: () => {
+      invalidate();
+      toast.success("流量计数已清零（仅观测口径，计费台账不受影响）");
+    },
+    onError: fail,
+  });
 
   const tunnels = tunnelsQuery.data?.tunnels ?? [];
   const users = usersQuery.data?.users ?? [];
@@ -405,10 +416,13 @@ export default function RulesPage() {
                 <Table.Column id="user" defaultWidth={100}>
                   用户
                 </Table.Column>
+                <Table.Column id="traffic" defaultWidth={170}>
+                  流量 (入/出)
+                </Table.Column>
                 <Table.Column id="status" defaultWidth={210}>
                   状态
                 </Table.Column>
-                <Table.Column id="actions" defaultWidth={150}>
+                <Table.Column id="actions" defaultWidth={200}>
                   <span className="flex justify-end">操作</span>
                 </Table.Column>
               </Table.Header>
@@ -455,6 +469,12 @@ export default function RulesPage() {
                       )}
                     </Table.Cell>
                     <Table.Cell>
+                      <span className="flex flex-col" title="观测计数（各节点腿求和），可在操作里清零；计费以台账为准">
+                        <Mono>入 {formatTraffic(r.upload_traffic)}</Mono>
+                        <Mono>出 {formatTraffic(r.download_traffic)}</Mono>
+                      </span>
+                    </Table.Cell>
+                    <Table.Cell>
                       <div className="flex items-center gap-1">
                         <StatusChip tone={ruleStatusLabel(r.status).tone} title={r.status}>
                           {ruleStatusLabel(r.status).label}
@@ -474,6 +494,18 @@ export default function RulesPage() {
                         <RowButton onPress={() => setEditing(r)}>编辑</RowButton>
                         <RowButton isDisabled={restartMutation.isPending} onPress={() => restartMutation.mutate(r.id)}>
                           重启
+                        </RowButton>
+                        <RowButton
+                          isDisabled={resetTrafficMutation.isPending}
+                          onPress={() =>
+                            confirmDanger(
+                              "清零流量计数",
+                              "仅清空该规则的观测计数（计费台账与配额不受影响），确定？",
+                              () => resetTrafficMutation.mutate(r.id),
+                            )
+                          }
+                        >
+                          清零
                         </RowButton>
                         <RowButton
                           danger

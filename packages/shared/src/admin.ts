@@ -65,7 +65,6 @@ export const createNodeSchema = z.object({
     .regex(/^\d+-\d+$/, "ports must look like '10000-20000'")
     .default("10000-20000"),
   traffic_limit: z.number().int().nonnegative().default(0),
-  enlarge_scale: z.number().int().nonnegative().default(1),
   rate: z.number().min(0.1, "计费倍率范围 0.1-100").max(100, "计费倍率范围 0.1-100").default(1),
   custom_cfg: z.unknown().optional(),
   tls_config: tlsConfigInputSchema.optional(),
@@ -135,7 +134,10 @@ export const createRuleSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   listen_port: z.number().int().positive(),
-  tunnel_id: z.number().int().positive().nullable().optional(),
+  /** Every rule is tunnel-bound — a rule outside any tunnel is never part of a
+   * node config (aggregation selects rules BY tunnel). Single-node direct
+   * forwarding is a one-in-chain tunnel. Legacy NULL rows may exist. */
+  tunnel_id: z.number().int().positive(),
   targets: z.string().min(1),
   /** Stored endpoint to forward to; when set, the server overrides `targets`
    * with the endpoint's composed address. null = manual address. */

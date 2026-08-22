@@ -121,6 +121,7 @@ export const api = {
   deleteRule: (id: number) => request<{ ok: true }>(`/api/admin/rules/${id}`, { method: "DELETE" }),
   restartRule: (id: number) =>
     request<{ ok: true; nodes: number }>(`/api/admin/rules/${id}/restart`, { method: "POST" }),
+  resetRuleTraffic: (id: number) => request<{ ok: true }>(`/api/admin/rules/${id}/reset-traffic`, { method: "POST" }),
 
   listEndpoints: () => request<{ endpoints: EndpointWithMeta[] }>("/api/admin/endpoints"),
   createEndpoint: (input: CreateEndpointInput) =>

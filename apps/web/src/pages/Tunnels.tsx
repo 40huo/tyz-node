@@ -288,7 +288,8 @@ function ChainForm({
       chain_type: values.chain_type as ChainType,
       transport: values.transport as Transport,
       index: values.index,
-      port: values.port,
+      // 入口行的监听端口由转发规则指定，链路端口不适用（服务端同样强制 0）。
+      port: values.chain_type === ChainType.IN ? 0 : values.port,
       strategy: values.strategy,
     });
   };
@@ -321,7 +322,8 @@ function ChainForm({
           label="端口"
           minValue={0}
           maxValue={65535}
-          hint="0 = 自动分配"
+          hint={values.chain_type === ChainType.IN ? "入口行不适用：监听端口由转发规则指定" : "0 = 自动分配"}
+          isDisabled={values.chain_type === ChainType.IN}
           value={values.port}
           onChange={(v) => set("port", v ?? 0)}
         />

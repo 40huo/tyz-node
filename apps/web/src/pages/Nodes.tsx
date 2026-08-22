@@ -6,6 +6,7 @@ import { type FormEvent, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
+import { formatTraffic } from "../format";
 import { serviceStateLabel } from "../labels";
 import {
   emptyState,
@@ -41,7 +42,6 @@ interface NodeFormValues {
   ports: string;
   level: number;
   traffic_limit: number;
-  enlarge_scale: number;
   rate: number;
   is_public: boolean;
   description: string;
@@ -56,7 +56,6 @@ function nodeFormValues(node: NodeWithMeta | null): NodeFormValues {
         ports: node.ports,
         level: node.level,
         traffic_limit: node.traffic_limit,
-        enlarge_scale: node.enlarge_scale,
         rate: node.rate,
         is_public: node.is_public,
         description: node.description ?? "",
@@ -68,7 +67,6 @@ function nodeFormValues(node: NodeWithMeta | null): NodeFormValues {
         ports: "10000-20000",
         level: 0,
         traffic_limit: 0,
-        enlarge_scale: 1,
         rate: 1,
         is_public: false,
         description: "",
@@ -139,7 +137,6 @@ function NodeForm({
       ports: values.ports,
       level: values.level,
       traffic_limit: values.traffic_limit,
-      enlarge_scale: values.enlarge_scale,
       rate: values.rate,
       is_public: values.is_public,
       description: values.description || undefined,
@@ -177,12 +174,6 @@ function NodeForm({
           minValue={0}
           value={values.traffic_limit}
           onChange={(v) => set("traffic_limit", v ?? 0)}
-        />
-        <NumberForm
-          label="扩容倍数"
-          minValue={1}
-          value={values.enlarge_scale}
-          onChange={(v) => set("enlarge_scale", v ?? 1)}
         />
         <NumberForm
           label="计费倍率"
@@ -516,6 +507,9 @@ export default function NodesPage() {
                 <Table.Column id="rate" defaultWidth={90}>
                   计费倍率
                 </Table.Column>
+                <Table.Column id="traffic" defaultWidth={180}>
+                  流量 (入/出)
+                </Table.Column>
                 <Table.Column id="version" defaultWidth={100}>
                   配置版本
                 </Table.Column>
@@ -547,6 +541,12 @@ export default function NodesPage() {
                     </Table.Cell>
                     <Table.Cell>
                       <Mono>{n.rate === 1 ? "1" : `${n.rate}×`}</Mono>
+                    </Table.Cell>
+                    <Table.Cell>
+                      <span className="flex flex-col">
+                        <Mono>入 {formatTraffic(n.ingress_traffic)}</Mono>
+                        <Mono>出 {formatTraffic(n.egress_traffic)}</Mono>
+                      </span>
                     </Table.Cell>
                     <Table.Cell>
                       {n.config_version === null ? (

@@ -4,7 +4,7 @@ import { sql } from "drizzle-orm";
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
- * Drizzle schema mirroring migrations/ (0001 baseline + subsequent files) exactly.
+ * Drizzle schema mirroring migrations/ (the squashed 0001 baseline) exactly.
  *
  * Property names deliberately keep the DB's snake_case (matching the entity
  * types in @tyz/shared) so query results satisfy the API shapes without a
@@ -22,8 +22,8 @@ export const relayNodes = sqliteTable("relay_nodes", {
   display_address: text("display_address"),
   /**
    * Plaintext node token (the panel is the trust domain; rotate on suspicion).
-   * NOT NULL + UNIQUE carried over from the pre-0003 hash column — rows created
-   * before 0003 may still hold an inert legacy sha256 string until rotated.
+   * NOT NULL + UNIQUE — databases from the pre-plaintext era may still hold an
+   * inert legacy sha256 string in this column until rotated.
    */
   token: text("token").notNull().unique(),
   /** Last 4 chars of the token, for masked display. */
@@ -34,7 +34,6 @@ export const relayNodes = sqliteTable("relay_nodes", {
   egress_traffic: integer("egress_traffic").notNull().default(0),
   ingress_traffic: integer("ingress_traffic").notNull().default(0),
   traffic_limit: integer("traffic_limit").notNull().default(0),
-  enlarge_scale: integer("enlarge_scale").notNull().default(1),
   /** Traffic billing multiplier: users are charged round(real × rate). */
   rate: real("rate").notNull().default(1.0),
   ports: text("ports").notNull().default("10000-20000"),

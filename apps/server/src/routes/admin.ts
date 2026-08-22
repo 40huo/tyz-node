@@ -287,7 +287,6 @@ adminRoutes.post("/nodes", async (c) => {
       is_public: input.is_public,
       ports: input.ports,
       traffic_limit: input.traffic_limit,
-      enlarge_scale: input.enlarge_scale,
       rate: input.rate,
       custom_cfg: input.custom_cfg ?? null,
       tls_config: input.tls_config ?? null,
@@ -332,7 +331,6 @@ adminRoutes.put("/nodes/:id", async (c) => {
   if (input.is_public !== undefined) patch.is_public = input.is_public;
   if (input.ports !== undefined) patch.ports = input.ports;
   if (input.traffic_limit !== undefined) patch.traffic_limit = input.traffic_limit;
-  if (input.enlarge_scale !== undefined) patch.enlarge_scale = input.enlarge_scale;
   if (input.rate !== undefined) patch.rate = input.rate;
   if (input.custom_cfg !== undefined) patch.custom_cfg = input.custom_cfg;
   if (input.tls_config !== undefined) patch.tls_config = input.tls_config;
@@ -590,6 +588,11 @@ adminRoutes.post("/chains", async (c) => {
   const problem = await validateProjectedShape(db, input.tunnel_id, projected);
   if (problem) return c.json({ error: problem }, 400);
 
+  // The IN row's port is meaningless — entry services listen on each rule's
+  // listen_port; chain ports serve out/chain rows (relay listener, hop dial
+  // address). Force 0 so a stale form field can't smuggle a value in.
+  const port = input.chain_type === ChainType.IN ? 0 : input.port;
+
   const ts = now();
   const [chain] = await db
     .insert(chains)
@@ -600,7 +603,7 @@ adminRoutes.post("/chains", async (c) => {
       transport: input.transport,
       index: input.index,
       strategy: input.strategy,
-      port: input.port,
+      port,
       created_at: ts,
       updated_at: ts,
     })
@@ -648,7 +651,10 @@ adminRoutes.put("/chains/:id", async (c) => {
   if (input.transport !== undefined) patch.transport = input.transport;
   if (input.index !== undefined) patch.index = input.index;
   if (input.strategy !== undefined) patch.strategy = input.strategy;
-  if (input.port !== undefined) patch.port = input.port;
+  // IN rows never carry a port (see POST /chains); also zeroes a row whose
+  // type is being flipped to in.
+  if (nextType === ChainType.IN) patch.port = 0;
+  else if (input.port !== undefined) patch.port = input.port;
   patch.updated_at = now();
 
   const updated = await db.update(chains).set(patch).where(eq(chains.id, id)).returning({ id: chains.id });
@@ -777,8 +783,19 @@ adminRoutes.post("/rules", async (c) => {
     return c.json({ error: "invalid rule payload", detail: parsed.error.flatten() }, 400);
   }
   const input = parsed.data;
+  // tunnel_id is required (see createRuleSchema): a rule outside a tunnel is
+  // never aggregated into any node config. Reject unknown tunnels up front
+  // instead of relying on the FK.
+  const tunnel = await createDb(c.env.DB)
+    .select({ id: tunnels.id })
+    .from(tunnels)
+    .where(eq(tunnels.id, input.tunnel_id))
+    .get();
+  if (!tunnel) {
+    return c.json({ error: `tunnel ${input.tunnel_id} not found` }, 400);
+  }
   if (input.user_id) {
-    const problem = await validateRuleOwnership(createDb(c.env.DB), input.user_id, input.tunnel_id ?? null);
+    const problem = await validateRuleOwnership(createDb(c.env.DB), input.user_id, input.tunnel_id);
     if (problem) return c.json({ error: problem }, 400);
   }
   // An associated endpoint is authoritative for `targets` — the composed
@@ -798,7 +815,7 @@ adminRoutes.post("/rules", async (c) => {
       name: input.name,
       description: input.description ?? null,
       listen_port: input.listen_port,
-      tunnel_id: input.tunnel_id ?? null,
+      tunnel_id: input.tunnel_id,
       user_id: input.user_id ?? null,
       endpoint_id: input.endpoint_id ?? null,
       targets,
@@ -809,9 +826,7 @@ adminRoutes.post("/rules", async (c) => {
       updated_at: ts,
     })
     .returning();
-  if (input.tunnel_id) {
-    await recomputeTunnelNodes(c.env, input.tunnel_id);
-  }
+  await recomputeTunnelNodes(c.env, input.tunnel_id);
   await recordAudit(c.env, {
     actor: c.get("adminName"),
     action: "rule.create",
@@ -948,6 +963,31 @@ adminRoutes.post("/rules/:id/restart", async (c) => {
     detail: rule.name,
   });
   return c.json({ ok: true, nodes: nodeIds.length });
+});
+
+/**
+ * Zero the rule's OBSERVATION counters (upload/download_traffic) so the owner
+ * can restart measuring. The billing ledger (traffic_hourly) is untouched:
+ * quota windows are computed from it, and zeroing it would hand back
+ * allowance. The counters resume accumulating on the next stats ingest.
+ */
+adminRoutes.post("/rules/:id/reset-traffic", async (c) => {
+  const id = Number(c.req.param("id"));
+  const db = createDb(c.env.DB);
+  const rule = await db.select({ name: relayRules.name }).from(relayRules).where(eq(relayRules.id, id)).get();
+  if (!rule) return c.json({ error: "rule not found" }, 404);
+  await db
+    .update(relayRules)
+    .set({ upload_traffic: 0, download_traffic: 0, updated_at: now() })
+    .where(eq(relayRules.id, id));
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "rule.reset_traffic",
+    targetType: "rule",
+    targetId: id,
+    detail: rule.name,
+  });
+  return c.json({ ok: true });
 });
 
 // ---- Target endpoints ----
