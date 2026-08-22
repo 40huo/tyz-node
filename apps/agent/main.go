@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -38,6 +39,10 @@ import (
 // alive across restarts during control-plane outages).
 const configCachePath = "last-config.json"
 
+// version is injected at build time via -ldflags "-X main.version=<tag>";
+// local builds (go run, e2e-local.sh) keep the "dev" default.
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "fatal:", err)
@@ -46,6 +51,17 @@ func main() {
 }
 
 func run() error {
+	// -V and --version are conventional aliases (Go's flag package treats
+	// one and two leading dashes identically, so both names cover -V/--V
+	// and -version/--version).
+	showVersionV := flag.Bool("V", false, "print version and exit")
+	showVersion := flag.Bool("version", false, "print version and exit")
+	flag.Parse()
+	if *showVersionV || *showVersion {
+		fmt.Println("tyz-agent", version)
+		return nil
+	}
+
 	cfg, err := agentcfg.Load()
 	if err != nil {
 		return err
@@ -160,7 +176,7 @@ func run() error {
 		log.Info("GOST debug api listening", "addr", addr)
 	}
 
-	log.Info("Agent started", "controlPlane", cfg.ControlPlaneURL)
+	log.Info("Agent started", "version", version, "controlPlane", cfg.ControlPlaneURL)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

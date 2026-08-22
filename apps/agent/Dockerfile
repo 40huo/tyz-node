@@ -9,6 +9,9 @@ FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 
 WORKDIR /src
 ARG TARGETARCH
+# Agent version stamped into the binary (main.version); CI passes the release
+# tag or "nightly" (master pushes), local builds keep the "dev" default.
+ARG VERSION=dev
 
 # Module cache layer: re-built only when go.mod/go.sum change.
 COPY apps/agent/go.mod apps/agent/go.sum ./apps/agent/
@@ -17,7 +20,7 @@ RUN cd apps/agent && go mod download
 COPY apps/agent ./apps/agent
 RUN mkdir -p /out && \
     CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
-    go build -C apps/agent -trimpath -ldflags "-s -w" -o /out/tyz-agent .
+    go build -C apps/agent -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/tyz-agent .
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata

@@ -90,7 +90,7 @@ stats ingest (traffic.ts) ──► deltas vs traffic_counters ──► D1 traf
 
 ### Agent (`apps/agent`, Go)
 
-- `main.go` — wiring: env config, slog (+ GOST logger routed to stdout), global default certificate, control loop, debug-only GOST Web API (started when `DEBUG=true`, listening on `GOST_API_ADDR`, default `127.0.0.1:18080`), signal handling (SIGTERM → final stats flush + close services). No HTTP server of its own: node health is judged by control-plane reports.
+- `main.go` — wiring: env config, slog (+ GOST logger routed to stdout), global default certificate, control loop, debug-only GOST Web API (started when `DEBUG=true`, listening on `GOST_API_ADDR`, default `127.0.0.1:18080`), signal handling (SIGTERM → final stats flush + close services). No HTTP server of its own: node health is judged by control-plane reports. The binary carries a build-time version (`var version`, stamped via `-ldflags "-X main.version=<tag>"`; `dev` when unset — `--version` prints it, startup logs it). Release binaries (`.github/workflows/agent-release.yml`, on `release: published` — attaches `tyz-agent-<tag>-<os>-<arch>.tar.gz` + checksums to the release) stamp the tag; the Docker build takes a `VERSION` build-arg (`docker-build.yml` passes the release tag or `nightly` — master pushes roll the `nightly` image tag, releases also push `latest`).
 - `internal/agentcfg` — env/dotenv loading; variables mirror the previous agent.
 - `internal/model` — Go structs mirroring `@tyz/shared` payloads (only consumed fields).
 - `internal/builder` — `Build(NodeConfigData) *config.Config`: port of the TS builder (golden-tested against its output); `DefaultTLS` feeds the control-plane TLS hints into the global default certificate.
