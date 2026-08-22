@@ -3,19 +3,19 @@
 // It polls the control plane for config versions (WebSocket push first, HTTP
 // polling fallback), renders NodeConfigData into GOST objects and applies
 // them directly through the GOST registries, and forwards observer stats in
-// batches. Its own HTTP surface is a single health endpoint.
+// batches. It has no HTTP surface of its own — a node is considered healthy
+// as long as it keeps reporting. DEBUG=true additionally exposes the embedded
+// GOST Web API (read-write, test-only) at GOST_API_ADDR for inspecting the
+// actually-applied GOST config.
 package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	corelogger "github.com/go-gost/core/logger"
 	apiservice "github.com/go-gost/x/api/service"
@@ -140,8 +140,15 @@ func run() error {
 		ctl.SetWSChannel(ws)
 	}
 
-	if cfg.GostAPIAddr != "" {
-		svc, err := apiservice.NewService("tcp", cfg.GostAPIAddr, apiservice.PathPrefixOption("/api"))
+	// Debug-only: the GOST Web API is a read-write surface for inspecting the
+	// actually-applied GOST runtime config (GET /api/config etc.). GostAPIAddr
+	// is configurable so the default port can be overridden on conflict.
+	if cfg.Debug {
+		addr := cfg.GostAPIAddr
+		if addr == "" {
+			addr = "127.0.0.1:18080"
+		}
+		svc, err := apiservice.NewService("tcp", addr, apiservice.PathPrefixOption("/api"))
 		if err != nil {
 			return fmt.Errorf("start gost api: %w", err)
 		}
@@ -150,13 +157,10 @@ func run() error {
 				log.Error("GOST debug api stopped", "error", err)
 			}
 		}()
-		log.Info("GOST debug api listening", "addr", cfg.GostAPIAddr)
+		log.Info("GOST debug api listening", "addr", addr)
 	}
 
-	healthServer := startHealthServer(cfg, log)
-	log.Info("Server started",
-		"health", fmt.Sprintf("http://%s:%d/healthz", cfg.Host, cfg.Port),
-		"controlPlane", cfg.ControlPlaneURL)
+	log.Info("Agent started", "controlPlane", cfg.ControlPlaneURL)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -170,33 +174,8 @@ func run() error {
 	<-ctx.Done()
 	log.Info("Shutting down...")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := healthServer.Shutdown(shutdownCtx); err != nil {
-		log.Error("Health server shutdown failed", "error", err)
-	}
-
 	<-loopDone // includes the final stats flush
 	applier.Shutdown()
 	log.Info("Shutdown complete")
 	return nil
-}
-
-func startHealthServer(cfg *agentcfg.Config, log *slog.Logger) *http.Server {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf( //nolint:errcheck
-			`{"status":"ok","timestamp":%q,"service":"tyz-agent"}`, time.Now().UTC().Format(time.RFC3339))))
-	})
-
-	server := &http.Server{Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port), Handler: mux}
-	go func() {
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("Health server failed", "error", err)
-			os.Exit(1)
-		}
-	}()
-	return server
 }

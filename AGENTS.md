@@ -23,7 +23,7 @@ bun run build:web               # build apps/web -> apps/web/dist
 
 bun run dev:server              # wrangler dev (8787, root wrangler.jsonc) — apply migrations first
 bun run dev:web                 # vite dev (5173, proxies /api to 8787)
-bun run dev:agent               # go run the agent (18090); needs CONTROL_PLANE_URL + NODE_TOKEN
+bun run dev:agent               # go run the agent; needs CONTROL_PLANE_URL + NODE_TOKEN
 bun run test:agent              # go test ./... in apps/agent (golden builder, WS state machine, apply)
 
 # Server (from the repo root — wrangler.jsonc lives there)
@@ -90,7 +90,7 @@ stats ingest (traffic.ts) ──► deltas vs traffic_counters ──► D1 traf
 
 ### Agent (`apps/agent`, Go)
 
-- `main.go` — wiring: env config, slog (+ GOST logger routed to stdout), global default certificate, control loop, optional GOST debug API (`GOST_API_ADDR`), health server, signal handling (SIGTERM → final stats flush + close services).
+- `main.go` — wiring: env config, slog (+ GOST logger routed to stdout), global default certificate, control loop, debug-only GOST Web API (started when `DEBUG=true`, listening on `GOST_API_ADDR`, default `127.0.0.1:18080`), signal handling (SIGTERM → final stats flush + close services). No HTTP server of its own: node health is judged by control-plane reports.
 - `internal/agentcfg` — env/dotenv loading; variables mirror the previous agent.
 - `internal/model` — Go structs mirroring `@tyz/shared` payloads (only consumed fields).
 - `internal/builder` — `Build(NodeConfigData) *config.Config`: port of the TS builder (golden-tested against its output); `DefaultTLS` feeds the control-plane TLS hints into the global default certificate.
@@ -167,7 +167,7 @@ All GOST objects are named deterministically (`service-{ruleId}` at entries, `se
 
 ## Environment Variables
 
-Agent (`apps/agent/.env.example`, loaded from the working directory; real env vars take precedence): `CONTROL_PLANE_URL`, `NODE_TOKEN` (required); `PORT` (18090), `HOST` (127.0.0.1), `POLL_INTERVAL_MS` (10000), `STATS_FLUSH_INTERVAL_MS` (60000), `WS_ENABLED` (true; false = pure HTTP polling), `WS_PROBE_INTERVAL_MS` (60000; WS reconnect probe interval while in poll fallback), `WS_PING_INTERVAL_MS` (60000; heartbeat, clamped < 90s), `GOST_API_ADDR` (empty; set e.g. `127.0.0.1:18080` to expose the embedded GOST Web API for debugging), `DEBUG`.
+Agent (`apps/agent/.env.example`, loaded from the working directory; real env vars take precedence): `CONTROL_PLANE_URL`, `NODE_TOKEN` (required); `POLL_INTERVAL_MS` (10000), `STATS_FLUSH_INTERVAL_MS` (60000), `WS_ENABLED` (true; false = pure HTTP polling), `WS_PROBE_INTERVAL_MS` (60000; WS reconnect probe interval while in poll fallback), `WS_PING_INTERVAL_MS` (60000; heartbeat, clamped < 90s), `DEBUG` (test-only: verbose logs + starts the embedded GOST Web API), `GOST_API_ADDR` (GOST Web API listen address, effective only with `DEBUG=true`; default `127.0.0.1:18080`, override on port conflict).
 
 Server (root `.dev.vars` for local — next to `wrangler.jsonc`; `wrangler secret put` for production): `ADMIN_USERNAME`, `ADMIN_PASSWORD` (plaintext login; legacy `ADMIN_PASSWORD_SHA256` + `TOKEN_SALT` as an alternative); optional `SESSION_SECRET` (derived from the admin credential when unset) and `TOKEN_SALT` (**if set, changes the token-hash scheme — never change/unset it after nodes exist**).
 
@@ -175,7 +175,7 @@ Server (root `.dev.vars` for local — next to `wrangler.jsonc`; `wrangler secre
 
 Server: `GET /api/healthz`; agent-facing `GET /api/agent/config?version=N` (304/200), `GET /api/agent/ws` (WebSocket upgrade; pushes `{"type":"config_changed"}` / `{"type":"restart_service","service":...}`, answers `ping`→`pong`), `POST /api/agent/stats` (samples + service health snapshot; samples also fold into the hourly ledger and metrics rollup); admin `POST /api/admin/login|logout`, `GET /api/admin/me`, CRUD `/api/admin/nodes|tunnels|chains|rules|users|packages|endpoints` (+`/api/admin/nodes/:id/{recompute,rotate-token,stats,health}`, `/api/admin/users/:id/subscribe` for activate/switch/renew, `GET /api/admin/users/:id` returns the rules' quota status incl. stop reasons, `GET /api/admin/audit` for the admin write trail, `POST /api/admin/rules/:id/restart` for the manual restart directive, `GET /api/admin/nodes/:id/metrics` for the hourly connection rollup, `GET /api/admin/tls/status` + `PUT /api/admin/settings/tls-domain` for the platform link-TLS domain and cert expiry metadata).
 
-Agent: `GET /healthz` (that is its entire HTTP surface; config apply and observer stats are in-process function calls).
+Agent: no HTTP surface of its own (a node is considered healthy as long as it keeps reporting; config apply and observer stats are in-process function calls). `DEBUG=true` starts the embedded GOST Web API at `GOST_API_ADDR` (default `127.0.0.1:18080`, `/api` prefix — read-write, test-only) for inspecting the actually-applied GOST config.
 
 ## Code Style
 

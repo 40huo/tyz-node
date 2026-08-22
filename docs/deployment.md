@@ -419,10 +419,7 @@ systemctl daemon-reload && systemctl enable --now tyz-agent
 ### 5.5 验证
 
 ```bash
-# 健康检查（HOST 默认 127.0.0.1，host 网络下从节点机本机探测）
-curl http://127.0.0.1:18090/healthz    # → {"status":"ok",...}
-
-# 日志（agent 与内嵌 GOST 都打 stdout）
+# 日志（agent 与内嵌 GOST 都打 stdout；节点在线看面板——有 stats 上报即在线）
 docker logs -f tyz-app                 # 方式 A
 journalctl -u tyz-agent -f             # 方式 B
 ```
@@ -493,7 +490,7 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql   # 仓库�
 
 ### 7.5 监控建议
 
-- 对 `https://<域名>/api/healthz` 与各节点机 `127.0.0.1:18090/healthz`（需本机探针）做拨测；
+- 对 `https://<域名>/api/healthz` 做拨测；节点在线状态看面板（有 stats 上报即在线，agent 无自有 HTTP 端口）；
 - 面板节点页可看每服务健康与 24h 连接峰值，用户页可看配额停用原因；
 - agent 掉线时控制面不会告警（推送只达在线 socket，重连后补拉），节点健康页是人工观察点。
 
@@ -505,8 +502,8 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql   # 仓库�
 - [ ] 若启用了可选 `SESSION_SECRET` / `TOKEN_SALT`，妥善备份；`TOKEN_SALT` 启用后不可再更改或移除（会使全部节点 token 失效）
 - [ ] 管理员密码为强密码（单账户体系，无 2FA，必要时在前面加 Cloudflare Access）
 - [ ] 节点 token 泄露立即走「轮换」（旧 token 立即失效）
-- [ ] 节点机防火墙只放行：客户端接入端口、链路端口、出站 443；`18090` 健康口保持 `127.0.0.1`
-- [ ] `GOST_API_ADDR` 仅排障临时开启（调试 API 可读写运行时配置），用完即关
+- [ ] 节点机防火墙只放行：客户端接入端口、链路端口、出站 443（agent 无自有 HTTP 端口）
+- [ ] `DEBUG=true` 仅测试/排障临时开启（随之启动的 GOST 调试 API 可读写运行时配置），用完即关；`GOST_API_ADDR` 保持 `127.0.0.1`
 - [ ] 自定义域名绑定后考虑 `workers_dev: false` 收敛入口
 - [ ] D1 定期 `export` 备份（计费数据）
 
@@ -562,15 +559,14 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql   # 仓库�
 |---|---|---|
 | `CONTROL_PLANE_URL` | **必填** | 控制面地址，如 `https://tyz.example.com`（末尾 `/` 自动去除） |
 | `NODE_TOKEN` | **必填** | 节点 token（面板创建节点时显示） |
-| `HOST` | `127.0.0.1` | 健康服务监听地址（远程探测才改 `0.0.0.0`，注意暴露面） |
-| `PORT` | `18090` | 健康服务端口（agent 全部 HTTP 面就是 `/healthz`） |
+| `HOST` / `PORT` | 已移除 | agent 不再有自有健康端口；节点在线以持续 stats 上报为准 |
 | `POLL_INTERVAL_MS` | `10000` | HTTP 轮询间隔（WS 健康时仅作 5 分钟安全网，不会按此频率打） |
 | `STATS_FLUSH_INTERVAL_MS` | `60000` | 统计批量上报间隔（缓冲上限 1000，退出时 flush） |
 | `WS_ENABLED` | `true` | `false` = 强制纯 HTTP 轮询 |
 | `WS_PROBE_INTERVAL_MS` | `60000` | 降级轮询期间的 WS 重连探测间隔 |
 | `WS_PING_INTERVAL_MS` | `60000` | WS 心跳（内部钳制 < 90s，适配边缘空闲超时） |
-| `GOST_API_ADDR` | 空 | 调试用：暴露内嵌 GOST Web API（如 `127.0.0.1:18080`，路径前缀 `/api`），平时保持关闭 |
-| `DEBUG` | 空 | `true` = 调试日志 |
+| `GOST_API_ADDR` | `127.0.0.1:18080` | GOST Web API 监听地址，**仅 `DEBUG=true` 时生效**（`/api` 前缀，读写调试面，`GET /api/config` 可看实际生效的 GOST 配置）；端口冲突时改这里 |
+| `DEBUG` | 空 | `true` = 调试模式：详细日志 + 启动 GOST Web API（仅测试用） |
 
 `.env` 从**工作目录**加载，真实环境变量优先。
 
@@ -586,7 +582,7 @@ bunx wrangler d1 export tyz --remote --output=backup-$(date +%F).sql   # 仓库�
 - `GET /api/agent/config?version=N`（304/200）、`GET /api/agent/ws`（Bearer token；推送 `config_changed` / `restart_service`，应答 ping→pong）、`POST /api/agent/stats`
 - `POST /api/admin/login|logout`、`GET /api/admin/me`、CRUD `/api/admin/nodes|tunnels|chains|rules|users|packages|endpoints`，及 `nodes/:id/{recompute,rotate-token,stats,health,metrics}`、`users/:id/subscribe`、`rules/:id/restart`、`GET /api/admin/audit`、`GET /api/admin/tls/status`、`PUT /api/admin/settings/tls-domain`
 
-agent：`GET /healthz`（仅此一个）。
+agent：无自有 HTTP 端口（节点在线以持续上报为准）；`DEBUG=true` 时在 `GOST_API_ADDR`（默认 `127.0.0.1:18080`，`/api` 前缀）暴露内嵌 GOST Web API，可查看实际生效的 GOST 运行时配置。
 
 ### D. 参考链接
 
