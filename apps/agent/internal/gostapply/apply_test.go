@@ -2,11 +2,15 @@ package gostapply
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"testing"
 	"time"
 
+	corelistener "github.com/go-gost/core/listener"
 	corelogger "github.com/go-gost/core/logger"
 	"github.com/go-gost/x/config"
 	xquota "github.com/go-gost/x/limiter/quota"
@@ -560,5 +564,28 @@ func TestApplyAdmissionLifecycle(t *testing.T) {
 	}
 	if len(registry.AdmissionRegistry().GetAll()) != 0 {
 		t.Fatal("expected 0 admissions after empty apply")
+	}
+}
+
+// TestIsNormalServeExit pins the normal-exit detection for both closed-listener
+// error families: stdlib net.ErrClosed (plain net listeners) and go-gost
+// core's listener.ErrClosed (custom transports — grpc/ws/quic/...), including
+// wrapped forms. A mis-classified normal exit logs ERROR on every service
+// replacement/shutdown of such services.
+func TestIsNormalServeExit(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{net.ErrClosed, true},
+		{corelistener.ErrClosed, true},
+		{fmt.Errorf("accept: %w", net.ErrClosed), true},
+		{fmt.Errorf("accept: %w", corelistener.ErrClosed), true},
+		{errors.New("listen: bind: address already in use"), false},
+	}
+	for _, tc := range cases {
+		if got := isNormalServeExit(tc.err); got != tc.want {
+			t.Errorf("isNormalServeExit(%v) = %v, want %v", tc.err, got, tc.want)
+		}
 	}
 }

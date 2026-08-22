@@ -16,7 +16,10 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	corelogger "github.com/go-gost/core/logger"
 	apiservice "github.com/go-gost/x/api/service"
@@ -42,6 +45,37 @@ const configCachePath = "last-config.json"
 // version is injected at build time via -ldflags "-X main.version=<tag>";
 // local builds (go run, e2e-local.sh) keep the "dev" default.
 var version = "dev"
+
+// gostStyleHandlerOptions shapes agent log lines to match the embedded GOST
+// logger (x/logger): JSON with lowercase logrus-style levels, RFC 3339
+// millisecond timestamps, and — at debug level — a "caller" field
+// ("dir/file.go:line"). GOST appends caller after its fields while slog emits
+// the source attr before msg: same field, slightly different position.
+func gostStyleHandlerOptions(level slog.Level, debug bool) *slog.HandlerOptions {
+	return &slog.HandlerOptions{
+		Level:     level,
+		AddSource: debug,
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			switch a.Key {
+			case slog.TimeKey:
+				if t, ok := a.Value.Any().(time.Time); ok {
+					a.Value = slog.StringValue(t.Format("2006-01-02T15:04:05.000Z07:00"))
+				}
+			case slog.LevelKey:
+				if l, ok := a.Value.Any().(slog.Level); ok {
+					a.Value = slog.StringValue(strings.ToLower(l.String()))
+				}
+			case slog.SourceKey:
+				if src, ok := a.Value.Any().(*slog.Source); ok {
+					a.Key = "caller"
+					a.Value = slog.StringValue(fmt.Sprintf("%s/%s:%d",
+						filepath.Base(filepath.Dir(src.File)), filepath.Base(src.File), src.Line))
+				}
+			}
+			return a
+		},
+	}
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -73,11 +107,12 @@ func run() error {
 		level = slog.LevelDebug
 		gostLevel = corelogger.DebugLevel
 	}
-	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	log := slog.New(slog.NewJSONHandler(os.Stdout, gostStyleHandlerOptions(level, cfg.Debug)))
 	slog.SetDefault(log)
 
 	// GOST components log through their own logger interface; route it to
-	// stdout too so service lifecycle events are visible next to agent logs.
+	// stdout too, in the same JSON shape as the agent's own lines above, so
+	// service lifecycle events interleave uniformly.
 	corelogger.SetDefault(xlogger.NewLogger(
 		xlogger.OutputOption(os.Stdout),
 		xlogger.LevelOption(gostLevel),
