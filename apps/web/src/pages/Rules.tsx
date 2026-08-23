@@ -430,6 +430,9 @@ export default function RulesPage() {
               </Table.Header>
               <Table.Body
                 items={filtered}
+                // 行渲染器闭包引用了 tunnels/endpoints/users（延迟到达的辅助查询）；
+                // RAC 动态集合按 item 对象缓存行内容，必须声明依赖否则名称反查停留在 "?"。
+                dependencies={[tunnels, endpoints, users]}
                 renderEmptyState={emptyState(
                   search || filter !== "all" ? "没有匹配的结果" : "暂无数据，点击「新建规则」开始",
                 )}

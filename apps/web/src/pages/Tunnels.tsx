@@ -389,7 +389,12 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
                     <span className="flex justify-end">操作</span>
                   </Table.Column>
                 </Table.Header>
-                <Table.Body items={chains} renderEmptyState={emptyState("暂无链路")}>
+                <Table.Body
+                  items={chains}
+                  // 行渲染器闭包引用 nodes（另一个查询）；声明依赖避免 RAC 行缓存在节点名上停留在 "?"。
+                  dependencies={[nodes]}
+                  renderEmptyState={emptyState("暂无链路")}
+                >
                   {(c) => (
                     <Table.Row id={c.id}>
                       <Table.Cell>
