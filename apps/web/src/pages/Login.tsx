@@ -1,9 +1,10 @@
-import { Card, toast } from "@heroui/react";
+import { toast } from "@heroui/react";
+import { IconLock, IconUser } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { FormShell, fail, SubmitButton, TextForm } from "../ui";
+import { AuthCard, FormShell, fail, IconTextField, SubmitButton } from "../ui";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -37,46 +38,32 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="login-backdrop flex min-h-dvh items-center justify-center bg-background p-4 text-foreground">
-      <div className="flex w-full max-w-sm flex-col gap-5">
-        <div className="flex items-center justify-center gap-2.5">
-          <div className="flex size-[30px] shrink-0 items-center justify-center rounded-lg bg-accent text-sm font-bold text-accent-foreground">
-            T
-          </div>
-          <span className="text-lg font-semibold">TYZ 控制台</span>
-        </div>
-        <Card className="p-2">
-          <Card.Header className="pb-2">
-            <Card.Title>登录</Card.Title>
-            <Card.Description>使用管理员账号管理 GOST 隧道节点</Card.Description>
-          </Card.Header>
-          <Card.Content>
-            <FormShell onSubmit={onSubmit}>
-              <TextForm
-                label="用户名"
-                isRequired
-                autoComplete="username"
-                autoFocus
-                value={values.username}
-                onChange={(v) => setValues((s) => ({ ...s, username: v }))}
-                error={errors.username}
-              />
-              <TextForm
-                label="密码"
-                isRequired
-                type="password"
-                autoComplete="current-password"
-                value={values.password}
-                onChange={(v) => setValues((s) => ({ ...s, password: v }))}
-                error={errors.password}
-              />
-              <SubmitButton size="lg" fullWidth isPending={pending}>
-                登录
-              </SubmitButton>
-            </FormShell>
-          </Card.Content>
-        </Card>
-      </div>
-    </div>
+    <AuthCard description="请输入您的登录凭证">
+      <FormShell onSubmit={onSubmit}>
+        <IconTextField
+          label="用户名"
+          icon={<IconUser size={16} stroke={2} />}
+          isRequired
+          autoComplete="username"
+          autoFocus
+          value={values.username}
+          onChange={(v) => setValues((s) => ({ ...s, username: v }))}
+          error={errors.username}
+        />
+        <IconTextField
+          label="密码"
+          icon={<IconLock size={16} stroke={2} />}
+          reveal
+          isRequired
+          autoComplete="current-password"
+          value={values.password}
+          onChange={(v) => setValues((s) => ({ ...s, password: v }))}
+          error={errors.password}
+        />
+        <SubmitButton size="lg" fullWidth isPending={pending}>
+          登录
+        </SubmitButton>
+      </FormShell>
+    </AuthCard>
   );
 }

@@ -36,7 +36,7 @@ import SetupPage from "./pages/Setup";
 import TunnelsPage from "./pages/Tunnels";
 import UsersPage from "./pages/Users";
 import { useTheme } from "./theme";
-import { cn } from "./ui";
+import { Brand, cn } from "./ui";
 
 // ---- Navigation config（侧栏与顶栏标题的唯一来源） ----
 
@@ -82,36 +82,6 @@ const SIDEBAR_WIDE = "w-56";
 const SIDEBAR_NARROW = "w-[68px]";
 
 // ---- Layout pieces ----
-
-/** 品牌 mark：双箭头转发符号，与 favicon 同款；颜色跟随 accent 主题 token。 */
-function BrandMark() {
-  return (
-    <div className="flex size-[30px] shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
-      <svg
-        viewBox="0 0 32 32"
-        className="size-[17px]"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={3.4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        role="img"
-      >
-        <title>TYZ</title>
-        <path d="M11 10l6 6-6 6M19 10l6 6-6 6" />
-      </svg>
-    </div>
-  );
-}
-
-function Brand({ collapsed }: { collapsed?: boolean }) {
-  return (
-    <div className={cn("flex items-center gap-2.5", collapsed && "justify-center")}>
-      <BrandMark />
-      {!collapsed && <span className="font-semibold">TYZ 控制台</span>}
-    </div>
-  );
-}
 
 function ThemeToggle({ isDark, onToggle }: { isDark: boolean; onToggle: () => void }) {
   return (

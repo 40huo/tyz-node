@@ -1,5 +1,6 @@
 import {
   Button,
+  Card,
   Chip,
   Description,
   Drawer,
@@ -8,6 +9,7 @@ import {
   Form,
   Heading,
   Input,
+  InputGroup,
   Label,
   ListBox,
   Modal,
@@ -24,6 +26,7 @@ import {
   Tooltip,
   toast,
 } from "@heroui/react";
+import { IconEye, IconEyeOff } from "@tabler/icons-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ComponentProps, type ReactNode, useCallback, useRef, useState } from "react";
 
@@ -172,6 +175,111 @@ export function SelectForm({
 }
 
 // ---- Form shell ----
+
+// ---- Brand（顶栏/抽屉/登录卡片共用） ----
+
+/** 品牌 mark：双箭头转发符号，与 favicon 同款；颜色跟随 accent 主题 token。 */
+export function BrandMark() {
+  return (
+    <div className="flex size-[30px] shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+      <svg
+        viewBox="0 0 32 32"
+        className="size-[17px]"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={3.4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        role="img"
+      >
+        <title>TYZ</title>
+        <path d="M11 10l6 6-6 6M19 10l6 6-6 6" />
+      </svg>
+    </div>
+  );
+}
+
+export function Brand({ collapsed }: { collapsed?: boolean }) {
+  return (
+    <div className={cn("flex items-center gap-2.5", collapsed && "justify-center")}>
+      <BrandMark />
+      {!collapsed && <span className="font-semibold">TYZ 控制台</span>}
+    </div>
+  );
+}
+
+// ---- Auth pages (login / setup) ----
+
+/** 登录/初始化页外壳：网格背景 + 居中高亮卡片（overlay 级投影），站点品牌在卡片内。 */
+export function AuthCard({ description, children }: { description: string; children: ReactNode }) {
+  return (
+    <div className="login-backdrop flex min-h-dvh items-center justify-center bg-background p-4 text-foreground">
+      <Card className="w-full max-w-sm gap-5 p-8 shadow-overlay">
+        <Card.Header className="items-center gap-3 text-center">
+          <Brand />
+          <Card.Description>{description}</Card.Description>
+        </Card.Header>
+        <Card.Content>{children}</Card.Content>
+      </Card>
+    </div>
+  );
+}
+
+/**
+ * 带左侧图标的认证输入框（登录/初始化页专用）：`reveal` 为密码框附加右侧
+ * 眼睛按钮切换明文。视觉走 InputGroup（prefix/suffix 插槽），主题边框/焦点态
+ * 由 group 承载。
+ */
+export function IconTextField({
+  label,
+  icon,
+  reveal = false,
+  error,
+  hint,
+  placeholder,
+  inputProps,
+  className,
+  ...props
+}: Omit<ComponentProps<typeof TextField>, "className" | "children"> & {
+  label: string;
+  icon: ReactNode;
+  reveal?: boolean;
+  error?: string;
+  hint?: string;
+  placeholder?: string;
+  inputProps?: ComponentProps<typeof InputGroup.Input>;
+  className?: string;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <TextField variant="secondary" {...props} isInvalid={!!error} className={cn("w-full", className)}>
+      <Label>{label}</Label>
+      <InputGroup variant="secondary">
+        <InputGroup.Prefix>{icon}</InputGroup.Prefix>
+        <InputGroup.Input
+          {...inputProps}
+          type={reveal ? (show ? "text" : "password") : inputProps?.type}
+          placeholder={placeholder}
+        />
+        {reveal && (
+          <InputGroup.Suffix className="px-1">
+            <Button
+              isIconOnly
+              variant="ghost"
+              size="sm"
+              className="size-7 text-muted"
+              aria-label={show ? "隐藏密码" : "显示密码"}
+              onPress={() => setShow((v) => !v)}
+            >
+              {show ? <IconEyeOff size={16} stroke={2} /> : <IconEye size={16} stroke={2} />}
+            </Button>
+          </InputGroup.Suffix>
+        )}
+      </InputGroup>
+      {error ? <FieldError>{error}</FieldError> : hint ? <Description>{hint}</Description> : null}
+    </TextField>
+  );
+}
 
 /**
  * 表单外壳：aria 校验模式（不拦截提交）——校验统一由各表单的 onSubmit 自行处理，
