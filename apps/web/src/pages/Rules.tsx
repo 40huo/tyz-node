@@ -1,6 +1,7 @@
 import { Button, Table, Tooltip, toast } from "@heroui/react";
 import { IconEraser, IconPencil, IconPlayerPlay, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearch } from "@tanstack/react-router";
 import {
   type AdminRuleRow,
   type CreateRuleInput,
@@ -14,11 +15,11 @@ import {
   type UserListItem,
 } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
 import { formatTraffic } from "../format";
 import { quotaStopReasonLabel, ruleStatusLabel } from "../labels";
+import { endpointsListOptions, rulesListOptions, tunnelsListOptions, usersListOptions } from "../queries";
 import {
   DataText,
   emptyState,
@@ -314,18 +315,19 @@ const RULE_FILTERS: { value: RuleFilter; label: string }[] = [
 export default function RulesPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<RelayRule | null>(null);
-  const [searchParams] = useSearchParams();
-  const [creating, setCreating] = useState(searchParams.get("create") === "1");
-  const initialFilter = RULE_FILTERS.some((f) => f.value === searchParams.get("status"))
-    ? (searchParams.get("status") as RuleFilter)
-    : "all";
+  const { create: createParam, status: statusParam } = useSearch({ strict: false }) as {
+    create?: "1";
+    status?: string;
+  };
+  const [creating, setCreating] = useState(createParam === "1");
+  const initialFilter = RULE_FILTERS.some((f) => f.value === statusParam) ? (statusParam as RuleFilter) : "all";
   const [filter, setFilter] = useState<RuleFilter>(initialFilter);
   const [search, setSearch] = useState("");
 
-  const rulesQuery = useQuery({ queryKey: ["rules"], queryFn: api.listRules });
-  const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
-  const usersQuery = useQuery({ queryKey: ["users"], queryFn: api.listUsers });
-  const endpointsQuery = useQuery({ queryKey: ["endpoints"], queryFn: api.listEndpoints });
+  const rulesQuery = useQuery(rulesListOptions);
+  const tunnelsQuery = useQuery(tunnelsListOptions);
+  const usersQuery = useQuery(usersListOptions);
+  const endpointsQuery = useQuery(endpointsListOptions);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["rules"] });
   const deleteMutation = useMutation({ mutationFn: api.deleteRule, onSuccess: invalidate, onError: fail });

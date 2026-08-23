@@ -1,6 +1,7 @@
 import { Button, FieldError, Switch, Table } from "@heroui/react";
 import { IconEraser, IconPencil, IconPlus, IconRefresh, IconRoute, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearch } from "@tanstack/react-router";
 import {
   type Chain,
   ChainType,
@@ -13,10 +14,10 @@ import {
   type TunnelWithMeta,
 } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
 import { chainTypeLabel, FORWARD_MODE_HINTS, forwardModeLabel } from "../labels";
+import { nodesListOptions, tunnelsListOptions } from "../queries";
 import {
   DataText,
   emptyState,
@@ -477,14 +478,14 @@ const TUNNEL_MODE_FILTERS: { value: TunnelModeFilter; label: string }[] = [
 export default function TunnelsPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<TunnelWithMeta | null>(null);
-  const [searchParams] = useSearchParams();
-  const [creating, setCreating] = useState(searchParams.get("create") === "1");
+  const { create: createParam } = useSearch({ strict: false }) as { create?: "1" };
+  const [creating, setCreating] = useState(createParam === "1");
   const [chainsOf, setChainsOf] = useState<TunnelWithMeta | null>(null);
   const [search, setSearch] = useState("");
   const [modeFilter, setModeFilter] = useState<TunnelModeFilter>("all");
 
-  const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
+  const tunnelsQuery = useQuery(tunnelsListOptions);
+  const nodesQuery = useQuery(nodesListOptions);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["tunnels"] });
   const deleteMutation = useMutation({ mutationFn: api.deleteTunnel, onSuccess: invalidate, onError: fail });

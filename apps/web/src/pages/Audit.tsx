@@ -2,8 +2,8 @@ import { Table } from "@heroui/react";
 import { IconEraser, IconRefresh } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { api } from "../api";
 import { auditActionLabel } from "../labels";
+import { auditListOptions } from "../queries";
 import {
   DataText,
   emptyState,
@@ -60,7 +60,7 @@ function timeCutoff(range: TimeRange): number {
 const PAGE_SIZE = 20;
 
 export default function AuditPage() {
-  const auditQuery = useQuery({ queryKey: ["audit"], queryFn: () => api.listAudit(200) });
+  const auditQuery = useQuery(auditListOptions);
   const [actionFilter, setActionFilter] = useState<ActionKind>("all");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const [search, setSearch] = useState("");

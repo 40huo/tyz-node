@@ -10,13 +10,14 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearch } from "@tanstack/react-router";
 import { type UserDetail, type UserListItem, UserStatus } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
 import { formatBytes } from "../format";
 import { quotaStopReasonLabel, userStatusLabel } from "../labels";
+import { usersListOptions } from "../queries";
 import {
   DataText,
   emptyState,
@@ -265,14 +266,14 @@ const USER_STATUS_FILTERS: { value: UserStatusFilter; label: string }[] = [
 
 export default function UsersPage() {
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
-  const [creating, setCreating] = useState(searchParams.get("create") === "1");
+  const { create: createParam } = useSearch({ strict: false }) as { create?: "1" };
+  const [creating, setCreating] = useState(createParam === "1");
   const [subscribing, setSubscribing] = useState<UserListItem | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<UserStatusFilter>("all");
 
-  const usersQuery = useQuery({ queryKey: ["users"], queryFn: api.listUsers });
+  const usersQuery = useQuery(usersListOptions);
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["users"] });
 
   const toggleMutation = useMutation({

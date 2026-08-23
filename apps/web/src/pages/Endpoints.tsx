@@ -1,11 +1,12 @@
 import { Button, Table } from "@heroui/react";
 import { IconEraser, IconPencil, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearch } from "@tanstack/react-router";
 import { type CreateEndpointInput, type Endpoint, type EndpointWithMeta, endpointAddress } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
+import { endpointsListOptions } from "../queries";
 import {
   DataText,
   emptyState,
@@ -148,12 +149,12 @@ const ENDPOINT_REF_FILTERS: { value: EndpointRefFilter; label: string }[] = [
 export default function EndpointsPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<Endpoint | null>(null);
-  const [searchParams] = useSearchParams();
-  const [creating, setCreating] = useState(searchParams.get("create") === "1");
+  const { create: createParam } = useSearch({ strict: false }) as { create?: "1" };
+  const [creating, setCreating] = useState(createParam === "1");
   const [search, setSearch] = useState("");
   const [refFilter, setRefFilter] = useState<EndpointRefFilter>("all");
 
-  const endpointsQuery = useQuery({ queryKey: ["endpoints"], queryFn: api.listEndpoints });
+  const endpointsQuery = useQuery(endpointsListOptions);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["endpoints"] });
   const deleteMutation = useMutation({ mutationFn: api.deleteEndpoint, onSuccess: invalidate, onError: fail });

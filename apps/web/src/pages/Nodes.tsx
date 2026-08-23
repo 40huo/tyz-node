@@ -11,13 +11,14 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearch } from "@tanstack/react-router";
 import type { CreateNodeInput, DashboardSummary, NodeWithMeta } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
 import { formatTraffic } from "../format";
 import { serviceStateLabel } from "../labels";
+import { nodesListOptions } from "../queries";
 import {
   DataText,
   emptyState,
@@ -505,14 +506,14 @@ function NodeHealthChip({ health }: { health: NodeHealthSummary | undefined }) {
 export default function NodesPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<NodeWithMeta | null>(null);
-  const [searchParams] = useSearchParams();
-  const [creating, setCreating] = useState(searchParams.get("create") === "1");
+  const { create: createParam } = useSearch({ strict: false }) as { create?: "1" };
+  const [creating, setCreating] = useState(createParam === "1");
   const [token, setToken] = useState<string | null>(null);
   const [statsNode, setStatsNode] = useState<NodeWithMeta | null>(null);
   const [search, setSearch] = useState("");
   const [healthFilter, setHealthFilter] = useState<NodeHealthFilter>("all");
 
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
+  const nodesQuery = useQuery(nodesListOptions);
   // 复用控制台汇总的 nodes_health 聚合（一次请求拿全部节点），列表页据此给出异常标识
   const healthQuery = useQuery({
     queryKey: ["nodes-health"],

@@ -6,6 +6,7 @@ import { type FormEvent, useMemo, useState } from "react";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
 import { formatBytes } from "../format";
+import { nodesListOptions, packagesListOptions, tunnelsListOptions } from "../queries";
 import {
   DataText,
   emptyState,
@@ -196,9 +197,9 @@ export default function PackagesPage() {
   const [search, setSearch] = useState("");
   const [periodFilter, setPeriodFilter] = useState<PackagePeriodFilter>("all");
 
-  const packagesQuery = useQuery({ queryKey: ["packages"], queryFn: api.listPackages });
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
-  const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
+  const packagesQuery = useQuery(packagesListOptions);
+  const nodesQuery = useQuery(nodesListOptions);
+  const tunnelsQuery = useQuery(tunnelsListOptions);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["packages"] });
   const deleteMutation = useMutation({ mutationFn: api.deletePackage, onSuccess: invalidate, onError: fail });

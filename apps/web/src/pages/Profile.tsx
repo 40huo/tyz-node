@@ -1,7 +1,8 @@
-import { Card, Chip, Skeleton, toast } from "@heroui/react";
+import { Chip, Description, Fieldset, Skeleton, Surface, toast } from "@heroui/react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { api } from "../api";
+import { meOptions } from "../queries";
 import { type FormErrors, FormShell, fail, hasErrors, PageHeader, PageShell, SubmitButton, TextForm } from "../ui";
 
 /** 信息网格单元：label 在上、value 在下，宽卡片下两列排布比左右对齐的行更耐看。 */
@@ -56,16 +57,15 @@ function PasswordCard() {
   };
 
   return (
-    <Card className="h-fit">
-      <Card.Header className="pb-2">
-        <Card.Title>修改密码</Card.Title>
-        <Card.Description>修改后当前会话保持登录；其他已登录会话不受影响</Card.Description>
-      </Card.Header>
-      <Card.Content>
-        <FormShell onSubmit={onSubmit}>
+    <Surface className="h-fit p-4 sm:p-5">
+      <FormShell onSubmit={onSubmit}>
+        <Fieldset className="flex flex-col gap-4">
+          <Fieldset.Legend>修改密码</Fieldset.Legend>
+          <Description>修改后当前会话保持登录；其他已登录会话不受影响</Description>
           <TextForm
             label="当前密码"
             isRequired
+            variant="secondary"
             value={values.old_password}
             onChange={(v) => set("old_password", v)}
             error={errors.old_password}
@@ -74,6 +74,7 @@ function PasswordCard() {
           <TextForm
             label="新密码"
             isRequired
+            variant="secondary"
             hint="至少 8 位"
             value={values.new_password}
             onChange={(v) => set("new_password", v)}
@@ -83,22 +84,23 @@ function PasswordCard() {
           <TextForm
             label="确认新密码"
             isRequired
+            variant="secondary"
             value={values.confirm}
             onChange={(v) => set("confirm", v)}
             error={errors.confirm}
             inputProps={{ type: "password", autoComplete: "new-password" }}
           />
-          <div className="flex justify-end">
+          <Fieldset.Actions className="justify-end">
             <SubmitButton isPending={mutation.isPending}>更新密码</SubmitButton>
-          </div>
-        </FormShell>
-      </Card.Content>
-    </Card>
+          </Fieldset.Actions>
+        </Fieldset>
+      </FormShell>
+    </Surface>
   );
 }
 
 export default function ProfilePage() {
-  const meQuery = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const meQuery = useQuery(meOptions);
   const username = meQuery.data?.username;
 
   return (
@@ -106,8 +108,8 @@ export default function ProfilePage() {
       <PageHeader title="个人中心" description="账户信息与安全设置" />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <Card.Content className="flex flex-col gap-5">
+        <Surface className="p-4 sm:p-5 lg:col-span-2">
+          <div className="flex flex-col gap-5">
             <div className="flex items-center gap-4">
               <div className="flex size-14 shrink-0 items-center justify-center rounded-lg bg-accent text-xl font-bold text-accent-foreground">
                 {username ? username.charAt(0).toUpperCase() : "…"}
@@ -132,8 +134,8 @@ export default function ProfilePage() {
               <InfoCell label="认证方式" value="账号密码（密码仅存服务端哈希）" />
               <InfoCell label="会话有效期" value="7 天（HttpOnly Cookie，退出即失效）" />
             </div>
-          </Card.Content>
-        </Card>
+          </div>
+        </Surface>
 
         <PasswordCard />
       </div>

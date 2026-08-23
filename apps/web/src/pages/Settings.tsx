@@ -1,10 +1,23 @@
-import { Card, Table, toast } from "@heroui/react";
-import { IconSettings } from "@tabler/icons-react";
+import { Fieldset, Surface, Table, toast } from "@heroui/react";
+import { IconRefresh, IconSettings } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
-import { DataText, FormShell, fail, NumberForm, SubmitButton, TableLoading, TextForm } from "../ui";
+import { tlsStatusOptions } from "../queries";
+import {
+  DataText,
+  FormShell,
+  fail,
+  ListToolbar,
+  NumberForm,
+  PageHeader,
+  PageShell,
+  SubmitButton,
+  TableLoading,
+  TextForm,
+  ToolbarButton,
+} from "../ui";
 
 /** 系统设置各二级页面的内容均尚未有后端支撑，先以规划说明占位（tls 除外）。 */
 const SECTIONS = {
@@ -60,7 +73,7 @@ const FALLBACK_PROFILE: ProfileDraft = {
 
 function TlsSettingsSection() {
   const queryClient = useQueryClient();
-  const statusQuery = useQuery({ queryKey: ["tls-status"], queryFn: api.tlsStatus });
+  const statusQuery = useQuery(tlsStatusOptions);
   const [domain, setDomain] = useState<string | null>(null);
   const [profileDraft, setProfileDraft] = useState<ProfileDraft | null>(null);
 
@@ -172,105 +185,120 @@ function TlsSettingsSection() {
   };
 
   return (
-    <Card>
-      <Card.Header className="pb-2">
-        <Card.Title>{SECTIONS.tls.title}</Card.Title>
-        <Card.Description>{SECTIONS.tls.description}</Card.Description>
-      </Card.Header>
-      <Card.Content className="flex flex-col gap-4">
-        <FormShell onSubmit={onSubmit} className="flex flex-col gap-3">
-          <TextForm
-            label="伪装域名"
-            placeholder="如 relay.example.com"
-            value={editingValue}
-            onChange={(v) => setDomain(v)}
-          />
-          <div className="grid gap-3 border-t border-border pt-3 sm:grid-cols-2">
+    <PageShell>
+      <PageHeader title={SECTIONS.tls.title} description={SECTIONS.tls.description} />
+      <ListToolbar>
+        <ToolbarButton
+          icon={<IconRefresh size={16} stroke={2} />}
+          spinning={statusQuery.isFetching}
+          onPress={() => statusQuery.refetch()}
+        >
+          刷新
+        </ToolbarButton>
+      </ListToolbar>
+      <FormShell onSubmit={onSubmit}>
+        {/* Surface：官方表单容器形态（bg-surface 抬升一档），控件用 secondary 变体适配表面背景 */}
+        <Surface className="p-4 sm:p-5">
+          <Fieldset className="flex flex-col gap-4">
+            <Fieldset.Legend>域名与证书画像</Fieldset.Legend>
             <TextForm
-              label="CA 通用名称"
-              placeholder="如 Example Service CA"
-              value={editingProfile.ca_common_name}
-              onChange={(v) => setProfile({ ca_common_name: v })}
+              label="伪装域名"
+              placeholder="如 relay.example.com"
+              variant="secondary"
+              value={editingValue}
+              onChange={(v) => setDomain(v)}
             />
-            <TextForm
-              label="CA 组织（O）"
-              placeholder="如 example.com，留空省略"
-              value={editingProfile.ca_organization}
-              onChange={(v) => setProfile({ ca_organization: v })}
-            />
-            <NumberForm
-              label="CA 有效期（天）"
-              placeholder="如 3650"
-              hint="366–7300"
-              value={editingProfile.ca_validity_days}
-              onChange={(v) => setProfile({ ca_validity_days: v })}
-            />
-            <NumberForm
-              label="叶证书有效期（天）"
-              placeholder="如 365"
-              hint="30–1825"
-              value={editingProfile.leaf_validity_days}
-              onChange={(v) => setProfile({ leaf_validity_days: v })}
-            />
-          </div>
-          <div className="flex justify-end">
-            <SubmitButton isPending={saveMutation.isPending}>保存设置</SubmitButton>
-          </div>
-        </FormShell>
+            <div className="grid gap-3 border-t border-border pt-4 sm:grid-cols-2">
+              <TextForm
+                label="CA 通用名称"
+                placeholder="如 Example Service CA"
+                variant="secondary"
+                value={editingProfile.ca_common_name}
+                onChange={(v) => setProfile({ ca_common_name: v })}
+              />
+              <TextForm
+                label="CA 组织（O）"
+                placeholder="如 example.com，留空省略"
+                variant="secondary"
+                value={editingProfile.ca_organization}
+                onChange={(v) => setProfile({ ca_organization: v })}
+              />
+              <NumberForm
+                label="CA 有效期（天）"
+                placeholder="如 3650"
+                hint="366–7300"
+                variant="secondary"
+                value={editingProfile.ca_validity_days}
+                onChange={(v) => setProfile({ ca_validity_days: v })}
+              />
+              <NumberForm
+                label="叶证书有效期（天）"
+                placeholder="如 365"
+                hint="30–1825"
+                variant="secondary"
+                value={editingProfile.leaf_validity_days}
+                onChange={(v) => setProfile({ leaf_validity_days: v })}
+              />
+            </div>
+            <Fieldset.Actions className="justify-end">
+              <SubmitButton isPending={saveMutation.isPending}>保存设置</SubmitButton>
+            </Fieldset.Actions>
+          </Fieldset>
+        </Surface>
+      </FormShell>
 
-        {statusQuery.isLoading ? (
-          <TableLoading />
-        ) : (
-          <Table.ScrollContainer>
-            <Table className="min-w-[480px]">
-              <Table.Content aria-label="平台证书状态">
-                <Table.Header>
-                  <Table.Column id="kind" isRowHeader>
-                    证书
-                  </Table.Column>
-                  <Table.Column id="purpose">用途</Table.Column>
-                  <Table.Column id="not_after">有效期至</Table.Column>
-                </Table.Header>
-                <Table.Body
-                  items={[
-                    { kind: "CA", purpose: "根证书（签发/验证服务端与客户端证书）", not_after: status?.ca_not_after },
-                    {
-                      kind: "服务端",
-                      purpose: "出口 relay 监听证书（SAN = 伪装域名）",
-                      not_after: status?.server_not_after,
-                    },
-                    { kind: "客户端", purpose: "入口拨号证书（mTLS 双向验证）", not_after: status?.client_not_after },
-                  ]}
-                  renderEmptyState={() => (
-                    <p className="text-muted p-4 text-sm">尚未生成证书——启用第一个 TLS 隧道时自动生成</p>
-                  )}
-                >
-                  {(row) => (
-                    <Table.Row id={row.kind}>
-                      <Table.Cell>
-                        <span className="font-medium">{row.kind}</span>
-                      </Table.Cell>
-                      <Table.Cell>{row.purpose}</Table.Cell>
-                      <Table.Cell>
-                        {row.not_after ? (
-                          <DataText>{formatDate(row.not_after)}</DataText>
-                        ) : (
-                          <span className="text-muted">未生成</span>
-                        )}
-                      </Table.Cell>
-                    </Table.Row>
-                  )}
-                </Table.Body>
-              </Table.Content>
-            </Table>
-          </Table.ScrollContainer>
-        )}
-        <p className="text-muted text-xs">
-          叶证书剩余 30 天内由每日巡检自动续期；CA 剩余 90
-          天内整套重签。证书与私钥仅通过节点配置通道下发，不会出现在本页面或审计日志中。
-        </p>
-      </Card.Content>
-    </Card>
+      {statusQuery.isLoading ? (
+        <TableLoading />
+      ) : (
+        <Table.ScrollContainer>
+          <Table className="min-w-[480px]">
+            <Table.Content aria-label="平台证书状态">
+              <Table.Header>
+                <Table.Column id="kind" isRowHeader>
+                  证书
+                </Table.Column>
+                <Table.Column id="purpose">用途</Table.Column>
+                <Table.Column id="not_after">有效期至</Table.Column>
+              </Table.Header>
+              <Table.Body
+                items={[
+                  { kind: "CA", purpose: "根证书（签发/验证服务端与客户端证书）", not_after: status?.ca_not_after },
+                  {
+                    kind: "服务端",
+                    purpose: "出口 relay 监听证书（SAN = 伪装域名）",
+                    not_after: status?.server_not_after,
+                  },
+                  { kind: "客户端", purpose: "入口拨号证书（mTLS 双向验证）", not_after: status?.client_not_after },
+                ]}
+                renderEmptyState={() => (
+                  <p className="text-muted p-4 text-sm">尚未生成证书——启用第一个 TLS 隧道时自动生成</p>
+                )}
+              >
+                {(row) => (
+                  <Table.Row id={row.kind}>
+                    <Table.Cell>
+                      <span className="font-medium">{row.kind}</span>
+                    </Table.Cell>
+                    <Table.Cell>{row.purpose}</Table.Cell>
+                    <Table.Cell>
+                      {row.not_after ? (
+                        <DataText>{formatDate(row.not_after)}</DataText>
+                      ) : (
+                        <span className="text-muted">未生成</span>
+                      )}
+                    </Table.Cell>
+                  </Table.Row>
+                )}
+              </Table.Body>
+            </Table.Content>
+          </Table>
+        </Table.ScrollContainer>
+      )}
+      <p className="text-muted text-xs">
+        叶证书剩余 30 天内由每日巡检自动续期；CA 剩余 90
+        天内整套重签。证书与私钥仅通过节点配置通道下发，不会出现在本页面或审计日志中。
+      </p>
+    </PageShell>
   );
 }
 
@@ -280,22 +308,17 @@ export default function SettingsPage({ kind }: { kind: SettingsKind }) {
   }
   const section = SECTIONS[kind];
   return (
-    <Card>
-      <Card.Header className="pb-2">
-        <Card.Title>{section.title}</Card.Title>
-        <Card.Description>{section.description}</Card.Description>
-      </Card.Header>
-      <Card.Content>
-        <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border py-10">
-          <IconSettings size={28} stroke={2} className="text-muted" />
-          <p className="text-sm text-muted">该模块开发中，暂未开放配置</p>
-          <ul className="mt-2 list-disc pl-5 text-xs leading-6 text-muted">
-            {section.planned.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      </Card.Content>
-    </Card>
+    <PageShell>
+      <PageHeader title={section.title} description={section.description} />
+      <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border py-10">
+        <IconSettings size={28} stroke={2} className="text-muted" />
+        <p className="text-sm text-muted">该模块开发中，暂未开放配置</p>
+        <ul className="mt-2 list-disc pl-5 text-xs leading-6 text-muted">
+          {section.planned.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </div>
+    </PageShell>
   );
 }
