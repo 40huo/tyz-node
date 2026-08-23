@@ -19,6 +19,20 @@ export enum Transport {
   MWSS = "mwss",
 }
 
+/**
+ * Transports that can carry a TLS-encrypted relay link (tunnels.tls_enabled,
+ * 2-hop relay shape only). The builder maps each to a TLS-terminating GOST
+ * listener/dialer type and pins the offered-ALPN profile; ws/mws without TLS
+ * stay plaintext by design.
+ */
+export const TLS_LINK_TRANSPORTS: ReadonlySet<Transport> = new Set([
+  Transport.GRPC,
+  Transport.TLS,
+  Transport.WSS,
+  Transport.MWSS,
+  Transport.MTLS,
+]);
+
 export enum RelayRuleStatus {
   CREATED = "created",
   PAUSED = "paused",

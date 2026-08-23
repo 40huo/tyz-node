@@ -302,13 +302,14 @@ func (b *cfgBuilder) relayService(tunnel *model.Tunnel) (*config.ServiceConfig, 
 	if out := b.outChain(tunnel); out != nil {
 		transport = out.Transport
 	}
+	tlsLink := b.linkTLSEnabled(tunnel)
 	svc := &config.ServiceConfig{
 		Name:     fmt.Sprintf("service-t%d", tunnel.ID),
 		Addr:     fmt.Sprintf(":%d", port),
 		Handler:  &config.HandlerConfig{Type: "relay", Auth: relayAuth(tunnel)},
-		Listener: &config.ListenerConfig{Type: dialerType(transport)},
+		Listener: &config.ListenerConfig{Type: dialerType(transport, tlsLink)},
 	}
-	if b.linkTLSEnabled(tunnel) {
+	if tlsLink {
 		svc.Listener.TLS = b.listenerTLS(transport)
 		if transport == model.TransportGRPC {
 			svc.Listener.Metadata = map[string]any{"path": "/grpc"}
@@ -418,7 +419,7 @@ func (b *cfgBuilder) buildChains() error {
 // the tunnel's relay credentials when present; TLS tunnels dial with the
 // platform client cert and verify the exit against the platform CA.
 func (b *cfgBuilder) twoHopChain(tunnel *model.Tunnel, out *model.Chain) (*config.ChainConfig, error) {
-	node, err := b.nodeConfig(out, tunnel, out.Transport, "relay")
+	node, err := b.nodeConfig(out, tunnel, out.Transport, "relay", b.linkTLSEnabled(tunnel))
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +446,7 @@ func (b *cfgBuilder) multiHopChain(tunnel *model.Tunnel, chains []model.Chain) (
 	hops := make([]*config.HopConfig, 0, len(chains))
 	for i := range chains {
 		chain := &chains[i]
-		node, err := b.nodeConfig(chain, tunnel, chain.Transport, "")
+		node, err := b.nodeConfig(chain, tunnel, chain.Transport, "", false)
 		if err != nil {
 			return nil, err
 		}
@@ -461,7 +462,13 @@ func (b *cfgBuilder) multiHopChain(tunnel *model.Tunnel, chains []model.Chain) (
 	return &config.ChainConfig{Name: chainName(tunnel.ID), Hops: hops}, nil
 }
 
-func (b *cfgBuilder) nodeConfig(chain *model.Chain, tunnel *model.Tunnel, dialerTransport model.Transport, connectorOverride string) (*config.NodeConfig, error) {
+func (b *cfgBuilder) nodeConfig(
+	chain *model.Chain,
+	tunnel *model.Tunnel,
+	dialerTransport model.Transport,
+	connectorOverride string,
+	tlsLink bool,
+) (*config.NodeConfig, error) {
 	connector := connectorOverride
 	if connector == "" {
 		connector = connectorType(chain.ChainType)
@@ -474,6 +481,6 @@ func (b *cfgBuilder) nodeConfig(chain *model.Chain, tunnel *model.Tunnel, dialer
 		Name:      nodeName(chain.NodeID, tunnel.ID),
 		Addr:      addr,
 		Connector: &config.ConnectorConfig{Type: connector},
-		Dialer:    &config.DialerConfig{Type: dialerType(dialerTransport)},
+		Dialer:    &config.DialerConfig{Type: dialerType(dialerTransport, tlsLink)},
 	}, nil
 }

@@ -92,12 +92,14 @@ export function NumberForm({
   label,
   error,
   hint,
+  placeholder,
   className,
   ...props
 }: Omit<ComponentProps<typeof NumberField>, "className"> & {
   label: string;
   error?: string;
   hint?: string;
+  placeholder?: string;
   className?: string;
 }) {
   return (
@@ -114,7 +116,7 @@ export function NumberForm({
       {/* Group 默认按 40px|1fr|40px 给步进按钮预留轨道；不渲染按钮时输入框会落进 40px 首轨被截成 ~1 个字符， */}
       {/* 塌缩为单列让输入框占满整行（工具类在 utilities 层，可覆盖 components 层的组件样式） */}
       <NumberField.Group className="[grid-template-columns:1fr]">
-        <NumberField.Input className="w-full" />
+        <NumberField.Input placeholder={placeholder} className="w-full" />
       </NumberField.Group>
       {error ? <FieldError>{error}</FieldError> : hint ? <Description>{hint}</Description> : null}
     </NumberField>

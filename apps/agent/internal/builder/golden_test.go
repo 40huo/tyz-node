@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -205,7 +206,7 @@ func TestBuildRawTwoNodeGolden(t *testing.T) {
 
 // TestBuildRelayTlsGolden pins the relay + TLS link for both transports
 // (grpc: TLS1.3 + ALPN h2 + :authority metadata, indistinguishable from
-// ordinary gRPC traffic; tls: standard TLS). Both sides authenticate: the
+// ordinary gRPC traffic; tls: TLS1.3 + ALPN h2, the same gRPC-style offer). Both sides authenticate: the
 // entry presents the client cert and verifies the exit, the exit serves the
 // server cert, verifies clients, locks SNI to the platform domain, checks
 // relay-protocol credentials and admits only the entry's IP.
@@ -215,6 +216,7 @@ func TestBuildRelayTlsGolden(t *testing.T) {
 	}{
 		{fixture: "testdata/relay-tls-grpc.json"},
 		{fixture: "testdata/relay-tls-tls.json"},
+		{fixture: "testdata/relay-tls-wss.json"},
 	} {
 		t.Run(tc.fixture, func(t *testing.T) {
 			entry, exit := loadTwoNodeFixture(t, tc.fixture)
@@ -289,6 +291,33 @@ func TestBuildRelayTlsGuards(t *testing.T) {
 	}
 	if cfg.Chains[0].Hops[0].Nodes[0].Dialer.TLS != nil {
 		t.Fatal("dialer TLS must be omitted without tls_material")
+	}
+}
+
+// TestLinkTLSOptionsALPN pins the offered-ALPN table for every transport,
+// including the ones without a full relay-TLS fixture: wss/mwss mirror a
+// net/http WebSocket client (h2 then http/1.1), tls/mtls/grpc claim plain h2,
+// and the non-TLS transports offer nothing.
+func TestLinkTLSOptionsALPN(t *testing.T) {
+	for _, tc := range []struct {
+		transport model.Transport
+		alpn      []string
+	}{
+		{model.TransportGRPC, []string{"h2"}},
+		{model.TransportTLS, []string{"h2"}},
+		{model.TransportMTLS, []string{"h2"}},
+		{model.TransportWSS, []string{"h2", "http/1.1"}},
+		{model.TransportMWSS, []string{"h2", "http/1.1"}},
+		{model.TransportWS, nil},
+		{model.TransportRaw, nil},
+	} {
+		opts := linkTLSOptions(tc.transport)
+		if opts.MinVersion != "VersionTLS13" || opts.MaxVersion != "VersionTLS13" {
+			t.Fatalf("%s: version pin = %s..%s", tc.transport, opts.MinVersion, opts.MaxVersion)
+		}
+		if !slices.Equal(opts.ALPN, tc.alpn) {
+			t.Fatalf("%s: alpn = %v, want %v", tc.transport, opts.ALPN, tc.alpn)
+		}
 	}
 }
 

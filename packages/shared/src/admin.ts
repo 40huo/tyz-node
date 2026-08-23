@@ -222,12 +222,37 @@ export const setTlsDomainSchema = z.object({
 });
 export type SetTlsDomainInput = z.infer<typeof setTlsDomainSchema>;
 
-/** GET /tls/status response body — expiry metadata only, never key material. */
+/** Observable certificate profile — issuer identity strings and validity. */
+export interface TlsProfile {
+  ca_common_name: string;
+  /** "" = the CA subject omits the O attribute. */
+  ca_organization: string;
+  ca_validity_days: number;
+  leaf_validity_days: number;
+}
+
+/**
+ * PUT /settings/tls-profile — every field optional (unset fields keep their
+ * current value). With no stored material the full set is issued immediately
+ * ("issued" in the response); otherwise changing CA identity (CN/O/CA
+ * validity) rotates the whole material set, and changing only the leaf
+ * validity re-issues the leaves.
+ */
+export const setTlsProfileSchema = z.object({
+  ca_common_name: z.string().trim().min(1).max(64).optional(),
+  ca_organization: z.string().trim().max(64).optional(),
+  ca_validity_days: z.number().int().min(366).max(7300).optional(),
+  leaf_validity_days: z.number().int().min(30).max(1825).optional(),
+});
+export type SetTlsProfileInput = z.infer<typeof setTlsProfileSchema>;
+
+/** GET /tls/status response body — expiry metadata + profile, never key material. */
 export interface TlsStatus {
   domain: string | null;
   ca_not_after: string | null;
   server_not_after: string | null;
   client_not_after: string | null;
+  profile: TlsProfile;
 }
 
 /** Rule row as listed by the admin panel, with the derived quota state of its owner. */

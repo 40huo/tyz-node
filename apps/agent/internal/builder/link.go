@@ -15,15 +15,23 @@ func admissionName(tunnelID int) string { return fmt.Sprintf("admission-t%d", tu
 
 func certPath(name string) string { return certs.DirName + "/" + name }
 
-// linkTLSOptions pins the link profile: TLS 1.3 only, and ALPN h2 for grpc
-// transport so the flow is indistinguishable from ordinary gRPC/HTTP2 traffic
-// (matching the reference deployment).
+// linkTLSOptions pins the link profile: TLS 1.3 only, plus the offered-ALPN
+// list a real Go client of each transport would send (grpc-go offers exactly
+// h2; net/http-based WebSocket clients offer h2 then http/1.1; tls/mtls claim
+// h2 so the whole fleet's ClientHello reads as one gRPC population). Only the
+// offer is visible on the wire — the negotiated value rides in
+// EncryptedExtensions and active probers are stopped by the mTLS wall — so the
+// claim is never contradicted; listener and dialer share this table so the two
+// lists always overlap (no NoApplicationProtocol alert).
 func linkTLSOptions(transport model.Transport) *config.TLSOptions {
 	opts := &config.TLSOptions{
 		MinVersion: "VersionTLS13",
 		MaxVersion: "VersionTLS13",
 	}
-	if transport == model.TransportGRPC {
+	switch transport {
+	case model.TransportWSS, model.TransportMWSS:
+		opts.ALPN = []string{"h2", "http/1.1"}
+	case model.TransportGRPC, model.TransportTLS, model.TransportMTLS:
 		opts.ALPN = []string{"h2"}
 	}
 	return opts

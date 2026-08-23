@@ -11,7 +11,7 @@
  * admin responses or the audit log.
  */
 import type { TlsMaterial } from "@tyz/shared";
-import { eq } from "drizzle-orm";
+import { eq, ne } from "drizzle-orm";
 import type { Database } from "../db";
 import { appSettings, tlsMaterial } from "../db/schema";
 
@@ -143,6 +143,10 @@ interface TbsSpec {
   sanDns?: string;
   /** EKU OID (serverAuth / clientAuth). */
   ekuOid?: string;
+  /** Subject key identifier (SHA-1 of spki) — always set, like real issuers. */
+  ski: Uint8Array;
+  /** Authority key identifier — the issuer's ski (own ski on the self-signed CA). */
+  aki: Uint8Array;
 }
 
 function buildTbs(spec: TbsSpec): Uint8Array {
@@ -158,6 +162,10 @@ function buildTbs(spec: TbsSpec): Uint8Array {
       critical: true,
       value: keyUsage(spec.isCA ? 0x06 : 0x80), // keyCertSign|cRLSign vs digitalSignature
     },
+    // subjectKeyIdentifier / authorityKeyIdentifier: WebPKI certs essentially
+    // always carry both — omitting them is a generator fingerprint.
+    { oidText: "2.5.29.14", value: tlv(0x04, spec.ski) },
+    { oidText: "2.5.29.35", value: tlv(0x30, tlv(0x80, spec.aki)) },
   ];
   if (spec.sanDns) {
     extensions.push({ oidText: "2.5.29.17", value: tlv(0x30, tlv(0x82, encoder.encode(spec.sanDns))) });
@@ -213,17 +221,130 @@ function pemDecode(pem: string): Uint8Array {
   return out;
 }
 
+/** Minimal DER walking to pull a CA cert's SPKI back out (needed for the
+ * leaf AKI when re-issuing under a stored CA). */
+function readTLV(buf: Uint8Array, at: number): { tag: number; content: Uint8Array; raw: Uint8Array; next: number } {
+  let pos = at;
+  const start = pos;
+  const tag = buf[pos++]!;
+  let length = buf[pos++]!;
+  if (length & 0x80) {
+    const count = length & 0x7f;
+    length = 0;
+    for (let i = 0; i < count; i++) length = length * 256 + buf[pos++]!;
+  }
+  const end = pos + length;
+  return { tag, content: buf.subarray(pos, end), raw: buf.subarray(start, end), next: end };
+}
+
+/** Certificate -> tbsCertificate -> subjectPublicKeyInfo (7th field, raw TLV). */
+function spkiFromCertDer(der: Uint8Array): Uint8Array {
+  let node = readTLV(der, 0);
+  if (node.tag !== 0x30) throw new Error("certificate is not a SEQUENCE");
+  node = readTLV(node.content, 0); // tbsCertificate
+  if (node.tag !== 0x30) throw new Error("missing tbsCertificate");
+  let at = 0;
+  for (let i = 0; i < 6; i++) at = readTLV(node.content, at).next; // skip to field 7
+  return readTLV(node.content, at).raw;
+}
+
+/** RFC 5280 method-1 key identifier: SHA-1 of the public key's SPKI. */
+async function keyIdentifier(spki: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest("SHA-1", spki));
+}
+
 // ---- Certificate issuance ----
 
-const CA_CN = "TYZ Relay CA";
-const CA_ORG = "TYZ";
+// ---- Certificate profile (admin-configurable) ----
+
 const EKU_SERVER_AUTH = "1.3.6.1.5.5.7.3.1";
 const EKU_CLIENT_AUTH = "1.3.6.1.5.5.7.3.2";
 const DAY_MS = 86_400_000;
-const CA_VALIDITY_DAYS = 3650;
-const LEAF_VALIDITY_DAYS = 365;
+/** Fallback for deployments whose CA predates the configurable profile. */
+const LEGACY_CA_CN = "TYZ Relay CA";
+const LEGACY_CA_ORG = "TYZ";
+const DEFAULT_CA_VALIDITY_DAYS = 3650;
+const DEFAULT_LEAF_VALIDITY_DAYS = 365;
 
 export type MaterialKind = "ca" | "server" | "client";
+
+/**
+ * The observable certificate profile. CA identity strings are what a probe
+ * reads off every leaf's issuer DN, so they must not be a fleet-wide constant:
+ * unset values derive from the disguise domain (per-deployment unique) and the
+ * admin can override each field.
+ */
+export interface TlsProfile {
+  ca_common_name: string;
+  /** "" = omit the O attribute entirely. */
+  ca_organization: string;
+  ca_validity_days: number;
+  leaf_validity_days: number;
+}
+
+/** app_settings keys — persisted with the effective values whenever material is issued. */
+const PROFILE_KEYS = {
+  ca_common_name: "tls_ca_common_name",
+  ca_organization: "tls_ca_organization",
+  ca_validity_days: "tls_ca_validity_days",
+  leaf_validity_days: "tls_leaf_validity_days",
+} as const;
+
+function derivedCaCommonName(domain: string): string {
+  return `${domain} CA`;
+}
+
+/** Rough registrable domain (last two labels) — a neutral per-deployment O. */
+function derivedCaOrganization(domain: string): string {
+  const labels = domain.split(".");
+  return labels.length <= 2 ? domain : labels.slice(-2).join(".");
+}
+
+async function readSettings(db: Database): Promise<Map<string, string>> {
+  const rows = await db.select().from(appSettings).all();
+  return new Map(rows.map((row) => [row.key, row.value]));
+}
+
+/**
+ * The profile in effect for the material generation/renewal paths: stored
+ * values win; a legacy deployment (material exists, keys absent) keeps its
+ * hardcoded identity so re-issued leaves keep byte-identical issuer DNs;
+ * fresh deployments derive neutral defaults from the domain.
+ */
+export async function resolveTlsProfile(
+  db: Database,
+  domain: string | null,
+  materialExists: boolean,
+): Promise<TlsProfile> {
+  const settings = await readSettings(db);
+  const org = settings.get(PROFILE_KEYS.ca_organization);
+  const caDays = Number(settings.get(PROFILE_KEYS.ca_validity_days));
+  const leafDays = Number(settings.get(PROFILE_KEYS.leaf_validity_days));
+  const effectiveDomain = domain ?? "";
+  return {
+    ca_common_name:
+      settings.get(PROFILE_KEYS.ca_common_name) ??
+      (materialExists ? LEGACY_CA_CN : derivedCaCommonName(effectiveDomain)),
+    ca_organization: org !== undefined ? org : materialExists ? LEGACY_CA_ORG : derivedCaOrganization(effectiveDomain),
+    ca_validity_days: Number.isFinite(caDays) && caDays > 0 ? caDays : DEFAULT_CA_VALIDITY_DAYS,
+    leaf_validity_days: Number.isFinite(leafDays) && leafDays > 0 ? leafDays : DEFAULT_LEAF_VALIDITY_DAYS,
+  };
+}
+
+async function persistProfileKeys(db: Database, profile: TlsProfile): Promise<void> {
+  const ts = new Date().toISOString();
+  for (const [key, value] of Object.entries({
+    [PROFILE_KEYS.ca_common_name]: profile.ca_common_name,
+    [PROFILE_KEYS.ca_organization]: profile.ca_organization,
+    [PROFILE_KEYS.ca_validity_days]: String(profile.ca_validity_days),
+    [PROFILE_KEYS.leaf_validity_days]: String(profile.leaf_validity_days),
+  })) {
+    await db
+      .insert(appSettings)
+      .values({ key, value, updated_at: ts })
+      .onConflictDoUpdate({ target: appSettings.key, set: { value, updated_at: ts } });
+  }
+}
 
 export interface MaterialRow {
   kind: MaterialKind;
@@ -262,6 +383,8 @@ async function issueCertificate(opts: {
   issuerName: Uint8Array;
   subjectName: Uint8Array;
   spki: Uint8Array;
+  ski: Uint8Array;
+  aki: Uint8Array;
   isCA: boolean;
   sanDns?: string;
   ekuOid?: string;
@@ -276,6 +399,8 @@ async function issueCertificate(opts: {
     notBefore,
     notAfter,
     spki: opts.spki,
+    ski: opts.ski,
+    aki: opts.aki,
     isCA: opts.isCA,
     sanDns: opts.sanDns,
     ekuOid: opts.ekuOid,
@@ -286,19 +411,25 @@ async function issueCertificate(opts: {
 }
 
 /** Full generation: CA + both leaves (fresh CA keypair). No DB access. */
-export async function generateTlsMaterial(domain: string): Promise<Record<MaterialKind, MaterialRow>> {
+export async function generateTlsMaterial(
+  domain: string,
+  profile: TlsProfile,
+): Promise<Record<MaterialKind, MaterialRow>> {
   const caKeys = await generateKeyPair();
   const caSpki = await exportDer(caKeys.publicKey, "spki");
   const caKeyPem = pemEncode("PRIVATE KEY", await exportDer(caKeys.privateKey, "pkcs8"));
-  const caName = name(CA_CN, CA_ORG);
+  const caSki = await keyIdentifier(caSpki);
+  const caName = name(profile.ca_common_name, profile.ca_organization || undefined);
 
   const ca = await issueCertificate({
     signKey: caKeys.privateKey,
     issuerName: caName,
     subjectName: caName,
     spki: caSpki,
+    ski: caSki,
+    aki: caSki, // self-signed: AKI == SKI
     isCA: true,
-    validityDays: CA_VALIDITY_DAYS,
+    validityDays: profile.ca_validity_days,
   });
   const caRow: MaterialRow = {
     kind: "ca",
@@ -310,7 +441,7 @@ export async function generateTlsMaterial(domain: string): Promise<Record<Materi
 
   const rows = await Promise.all(
     (["server", "client"] as const).map(async (kind) => {
-      const leaf = await issueLeaf(kind, domain, caRow, caName);
+      const leaf = await issueLeaf(kind, domain, profile, caRow, caName, caSki);
       return {
         kind,
         cert_pem: leaf.certPem,
@@ -323,14 +454,19 @@ export async function generateTlsMaterial(domain: string): Promise<Record<Materi
   return { ca: caRow, server: rows[0], client: rows[1] };
 }
 
-/** Re-issue one leaf under the existing CA (renewal / domain change). */
+/** Re-issue one leaf under the existing CA (renewal / domain change). The
+ * issuer DN must byte-match the stored CA's subject, so the profile must
+ * resolve to the same identity the CA was issued with (see resolveTlsProfile). */
 async function issueLeaf(
   kind: "server" | "client",
   domain: string,
+  profile: TlsProfile,
   ca: Pick<MaterialRow, "cert_pem" | "key_pem">,
   caName?: Uint8Array,
+  caAki?: Uint8Array,
 ): Promise<{ certPem: string; keyPem: string; notAfter: string }> {
-  const issuer = caName ?? name(CA_CN, CA_ORG);
+  const issuer = caName ?? name(profile.ca_common_name, profile.ca_organization || undefined);
+  const aki = caAki ?? (await keyIdentifier(spkiFromCertDer(pemDecode(ca.cert_pem))));
   const caKey = await importSigningKey(ca.key_pem);
   const leafKeys = await generateKeyPair();
   const spki = await exportDer(leafKeys.publicKey, "spki");
@@ -338,12 +474,16 @@ async function issueLeaf(
   const issued = await issueCertificate({
     signKey: caKey,
     issuerName: issuer,
-    subjectName: name(kind === "server" ? domain : `${domain}-client`),
+    // client.{domain} reads as a service hostname, not a "-client" literal
+    // (the client cert is wire-invisible under TLS 1.3, but stay neutral).
+    subjectName: name(kind === "server" ? domain : `client.${domain}`),
     spki,
+    ski: await keyIdentifier(spki),
+    aki,
     isCA: false,
     sanDns: kind === "server" ? domain : undefined,
     ekuOid: kind === "server" ? EKU_SERVER_AUTH : EKU_CLIENT_AUTH,
-    validityDays: LEAF_VALIDITY_DAYS,
+    validityDays: profile.leaf_validity_days,
   });
   return { certPem: issued.certPem, keyPem, notAfter: issued.notAfter };
 }
@@ -357,14 +497,25 @@ export async function getTlsDomain(db: Database): Promise<string | null> {
   return row?.value ?? null;
 }
 
-export async function setTlsDomain(db: Database, domain: string): Promise<void> {
+/**
+ * Set the platform-wide disguise domain. Returns whether the value actually
+ * changed and whether this save issued material from nothing. A same-value
+ * write is a pure no-op; a real change re-issues eagerly — with an existing
+ * CA it re-issues the dropped server leaf, with no material at all it issues
+ * the full set under the new domain. Settings saves never leave certs
+ * "pending until the first TLS tunnel".
+ */
+export async function setTlsDomain(db: Database, domain: string): Promise<{ changed: boolean; issued: boolean }> {
+  const row = await db.select().from(appSettings).where(eq(appSettings.key, TLS_DOMAIN_KEY)).get();
+  if (row?.value === domain) return { changed: false, issued: false };
   await db
     .insert(appSettings)
-    .values({ key: TLS_DOMAIN_KEY, value: domain })
+    .values({ key: TLS_DOMAIN_KEY, value: domain, updated_at: new Date().toISOString() })
     .onConflictDoUpdate({ target: appSettings.key, set: { value: domain, updated_at: new Date().toISOString() } });
-  // The server cert embeds the domain as SAN/CN — drop it so the next
-  // aggregation re-issues it (and the config diff pushes it to agents).
   await db.delete(tlsMaterial).where(eq(tlsMaterial.kind, "server"));
+  const hadCa = (await loadMaterial(db)).has("ca");
+  await ensureTlsMaterial(db);
+  return { changed: true, issued: !hadCa };
 }
 
 async function loadMaterial(db: Database): Promise<Map<MaterialKind, MaterialRow>> {
@@ -385,10 +536,12 @@ export async function ensureTlsMaterial(db: Database): Promise<TlsMaterial> {
   if (!domain) throw new Error("tls_domain is not configured");
 
   let rows = await loadMaterial(db);
+  const materialExists = rows.size > 0;
+  const profile = await resolveTlsProfile(db, domain, materialExists);
   if (!rows.has("ca") || !rows.has("server") || !rows.has("client")) {
     if (!rows.has("ca")) {
       // Fresh platform (or wiped material): one shot generates everything.
-      const fresh = await generateTlsMaterial(domain);
+      const fresh = await generateTlsMaterial(domain, profile);
       for (const row of Object.values(fresh)) await insertMaterialIfAbsent(db, row);
     } else {
       // CA exists but a leaf is missing (e.g. domain change dropped the server
@@ -396,7 +549,7 @@ export async function ensureTlsMaterial(db: Database): Promise<TlsMaterial> {
       const ca = rows.get("ca")!;
       for (const kind of ["server", "client"] as const) {
         if (rows.has(kind)) continue;
-        const leaf = await issueLeaf(kind, domain, ca);
+        const leaf = await issueLeaf(kind, domain, profile, ca);
         await insertMaterialIfAbsent(db, {
           kind,
           cert_pem: leaf.certPem,
@@ -406,6 +559,8 @@ export async function ensureTlsMaterial(db: Database): Promise<TlsMaterial> {
         });
       }
     }
+    // Record the effective profile so later writes can diff against it.
+    await persistProfileKeys(db, profile);
     rows = await loadMaterial(db);
   }
 
@@ -436,12 +591,14 @@ export async function renewTlsMaterial(db: Database): Promise<boolean> {
   const rows = await loadMaterial(db);
   if (!rows.has("ca") || !rows.has("server") || !rows.has("client")) return false;
 
+  const profile = await resolveTlsProfile(db, domain, true);
   const now = Date.now();
   const ca = rows.get("ca")!;
   if (Date.parse(ca.not_after) < now + 90 * DAY_MS) {
     await db.delete(tlsMaterial);
-    const fresh = await generateTlsMaterial(domain);
+    const fresh = await generateTlsMaterial(domain, profile);
     for (const row of Object.values(fresh)) await insertMaterialIfAbsent(db, row);
+    await persistProfileKeys(db, profile);
     return true;
   }
 
@@ -449,7 +606,7 @@ export async function renewTlsMaterial(db: Database): Promise<boolean> {
   for (const kind of ["server", "client"] as const) {
     const row = rows.get(kind)!;
     if (Date.parse(row.not_after) < now + 30 * DAY_MS) {
-      const leaf = await issueLeaf(kind, domain, ca);
+      const leaf = await issueLeaf(kind, domain, profile, ca);
       await db
         .update(tlsMaterial)
         .set({
@@ -465,18 +622,74 @@ export async function renewTlsMaterial(db: Database): Promise<boolean> {
   return changed;
 }
 
-/** Expiry metadata for the admin panel — never includes PEM/key material. */
+/**
+ * Apply admin profile edits, generating material eagerly. With no material
+ * stored yet the full set is issued right away ("issued" — a settings save
+ * never leaves certs pending until the first TLS tunnel). Otherwise: changing
+ * CA identity fields (CN/O/CA validity) rotates the whole set — new trust
+ * anchor, agents converge via the ordinary recompute+push cycle (brief link
+ * disruption while entry and exit swap); changing only the leaf validity
+ * re-issues the leaves under the existing CA ("leaves"); a no-op write
+ * leaves the material untouched ("none").
+ */
+export async function setTlsProfile(
+  db: Database,
+  input: {
+    ca_common_name?: string;
+    ca_organization?: string;
+    ca_validity_days?: number;
+    leaf_validity_days?: number;
+  },
+): Promise<{ profile: TlsProfile; regenerated: "all" | "leaves" | "issued" | "none" }> {
+  const domain = await getTlsDomain(db);
+  const rows = await loadMaterial(db);
+  const materialExists = rows.has("ca");
+  const current = await resolveTlsProfile(db, domain, materialExists);
+  const next: TlsProfile = {
+    ca_common_name: input.ca_common_name ?? current.ca_common_name,
+    ca_organization: input.ca_organization !== undefined ? input.ca_organization : current.ca_organization,
+    ca_validity_days: input.ca_validity_days ?? current.ca_validity_days,
+    leaf_validity_days: input.leaf_validity_days ?? current.leaf_validity_days,
+  };
+  await persistProfileKeys(db, next);
+  if (!domain) {
+    // No domain yet — nothing can be issued; the keys apply at the next save.
+    return { profile: next, regenerated: "none" };
+  }
+  if (!materialExists) {
+    await ensureTlsMaterial(db);
+    return { profile: next, regenerated: "issued" };
+  }
+  const caIdentityChanged =
+    next.ca_common_name !== current.ca_common_name ||
+    next.ca_organization !== current.ca_organization ||
+    next.ca_validity_days !== current.ca_validity_days;
+  if (caIdentityChanged) {
+    await db.delete(tlsMaterial);
+  } else if (next.leaf_validity_days !== current.leaf_validity_days) {
+    await db.delete(tlsMaterial).where(ne(tlsMaterial.kind, "ca"));
+  } else {
+    return { profile: next, regenerated: "none" };
+  }
+  await ensureTlsMaterial(db);
+  return { profile: next, regenerated: caIdentityChanged ? "all" : "leaves" };
+}
+
+/** Expiry metadata + effective profile for the admin panel — never PEM/key material. */
 export async function getTlsStatus(db: Database): Promise<{
   domain: string | null;
   ca_not_after: string | null;
   server_not_after: string | null;
   client_not_after: string | null;
+  profile: TlsProfile;
 }> {
   const [domain, rows] = await Promise.all([getTlsDomain(db), loadMaterial(db)]);
+  const profile = await resolveTlsProfile(db, domain, rows.size > 0);
   return {
     domain,
     ca_not_after: rows.get("ca")?.not_after ?? null,
     server_not_after: rows.get("server")?.not_after ?? null,
     client_not_after: rows.get("client")?.not_after ?? null,
+    profile,
   };
 }

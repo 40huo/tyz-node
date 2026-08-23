@@ -22,6 +22,7 @@ import type {
   RelayRule,
   RuleQuotaStatus,
   ServiceHealthRow,
+  SetTlsProfileInput,
   SetupInput,
   SetupStatusResponse,
   TlsStatus,
@@ -174,8 +175,13 @@ export const api = {
 
   tlsStatus: () => request<TlsStatus>("/api/admin/tls/status"),
   setTlsDomain: (domain: string) =>
-    request<{ ok: true; domain: string }>("/api/admin/settings/tls-domain", {
+    request<{ ok: true; domain: string; changed: boolean; issued: boolean }>("/api/admin/settings/tls-domain", {
       method: "PUT",
       body: JSON.stringify({ domain }),
+    }),
+  setTlsProfile: (input: SetTlsProfileInput) =>
+    request<{ ok: true; regenerated: "all" | "leaves" | "issued" | "none" }>("/api/admin/settings/tls-profile", {
+      method: "PUT",
+      body: JSON.stringify(input),
     }),
 };

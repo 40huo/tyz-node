@@ -513,7 +513,7 @@ func TestApplyAdmissionLifecycle(t *testing.T) {
 		}
 		// Material must be on disk for ParseService to load the cert files.
 		dir := t.TempDir()
-		if err := certs.Ensure(dir, material); err != nil {
+		if _, err := certs.Ensure(dir, material); err != nil {
 			t.Fatalf("certs: %v", err)
 		}
 		wd, _ := os.Getwd()
@@ -564,6 +564,112 @@ func TestApplyAdmissionLifecycle(t *testing.T) {
 	}
 	if len(registry.AdmissionRegistry().GetAll()) != 0 {
 		t.Fatal("expected 0 admissions after empty apply")
+	}
+}
+
+// TestApplyTLSMaterialChange pins the WithTLSMaterialChange option: a PEM
+// rotation does not alter the config structs (they carry file paths only), so
+// without the option the TLS service and chain stay as-is and the new cert
+// never loads; with the option the service is closed and re-served (new
+// instance, connections dropped) and the chain is re-registered.
+func TestApplyTLSMaterialChange(t *testing.T) {
+	a := testApplier(t)
+
+	tunnel := model.Tunnel{ID: 4, ForwardMode: model.ForwardModeRelay, TLSEnabled: true}
+	chains := []model.Chain{
+		{ID: 4, TunnelID: 4, NodeID: 1, ChainType: model.ChainIn, Transport: model.TransportRaw, Index: 0, Strategy: "round"},
+		{ID: 5, TunnelID: 4, NodeID: 2, ChainType: model.ChainOut, Transport: model.TransportTLS, Index: 1, Strategy: "round", Port: 48221},
+	}
+	materialRaw, err := os.ReadFile("../certs/testdata/fixture.json")
+	if err != nil {
+		t.Fatalf("read tls fixture: %v", err)
+	}
+	material := &model.TLSMaterial{}
+	if err := json.Unmarshal(materialRaw, material); err != nil {
+		t.Fatalf("parse tls fixture: %v", err)
+	}
+
+	// Exit-side data (TLS relay service) and entry-side data (chain with a
+	// TLS dialer + plain rule services) share the tunnel, but a single
+	// process has ONE registry: each apply tears down what its desired set
+	// lacks, so the two sides are exercised sequentially, never concurrently.
+	build := func(nodeID int, rules []model.RelayRule) *config.Config {
+		t.Helper()
+		data := &model.NodeConfigData{
+			Node:        model.RelayNode{ID: nodeID, Address: "127.0.0.1", Ports: "40000-40010"},
+			Nodes:       []model.RelayNode{{ID: 1, Address: "127.0.0.1", Ports: "40000-40010"}, {ID: 2, Address: "127.0.0.1", Ports: "40000-40010"}},
+			Rules:       rules,
+			Tunnels:     []model.Tunnel{tunnel},
+			Chains:      chains,
+			TLSMaterial: material,
+		}
+		cfg, err := builder.Build(data)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		return cfg
+	}
+	dir := t.TempDir()
+	if _, err := certs.Ensure(dir, material); err != nil {
+		t.Fatalf("certs: %v", err)
+	}
+	wd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { os.Chdir(wd) }) //nolint:errcheck
+
+	// ---- exit side: the TLS relay service ----
+	rules := []model.RelayRule{{ID: 9, ListenPort: 48231, TunnelID: &tunnel.ID, Targets: "127.0.0.1:49180", Status: "running"}}
+	exitCfg := build(2, rules)
+	if err := a.Apply(exitCfg); err != nil {
+		t.Fatalf("apply exit: %v", err)
+	}
+	svcBefore := registry.ServiceRegistry().Get("service-t4")
+	if svcBefore == nil {
+		t.Fatal("service-t4 not registered")
+	}
+	// Identical config without the option: true no-op (same instance).
+	if err := a.Apply(exitCfg); err != nil {
+		t.Fatalf("apply exit (no change): %v", err)
+	}
+	if registry.ServiceRegistry().Get("service-t4") != svcBefore {
+		t.Fatal("unchanged config without the option must not rebuild the service")
+	}
+	// With the option: closed and re-served — a NEW instance.
+	if err := a.Apply(exitCfg, WithTLSMaterialChange()); err != nil {
+		t.Fatalf("apply exit (material change): %v", err)
+	}
+	if got := registry.ServiceRegistry().Get("service-t4"); got == nil || got == svcBefore {
+		t.Fatal("TLS service must be rebuilt (new instance) on material change")
+	}
+	if err := a.Apply(&config.Config{}); err != nil {
+		t.Fatalf("apply empty: %v", err)
+	}
+
+	// ---- entry side: the TLS chain dialer + a plain (non-TLS) rule service ----
+	entryCfg := build(1, rules)
+	if err := a.Apply(entryCfg); err != nil {
+		t.Fatalf("apply entry: %v", err)
+	}
+	chainBefore := registry.ChainRegistry().Get("chain-4")
+	plainBefore := registry.ServiceRegistry().Get("service-9")
+	if chainBefore == nil || plainBefore == nil {
+		t.Fatal("chain-4/service-9 not registered")
+	}
+	// With the option: the TLS chain re-registers (new resolved dialer certs);
+	// the plain service has no TLS listener and must NOT be rebuilt.
+	if err := a.Apply(entryCfg, WithTLSMaterialChange()); err != nil {
+		t.Fatalf("apply entry (material change): %v", err)
+	}
+	if got := registry.ChainRegistry().Get("chain-4"); got == nil || got == chainBefore {
+		t.Fatal("TLS chain must be re-registered on material change")
+	}
+	if registry.ServiceRegistry().Get("service-9") != plainBefore {
+		t.Fatal("non-TLS service must not be rebuilt on material change")
+	}
+	if err := a.Apply(&config.Config{}); err != nil {
+		t.Fatalf("apply empty: %v", err)
 	}
 }
 

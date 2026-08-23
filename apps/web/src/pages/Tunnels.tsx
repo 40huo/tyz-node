@@ -171,8 +171,8 @@ function TunnelForm({
           </Switch>
           {values.tls_enabled ? (
             <p className="text-muted">
-              出口链路的传输需为 grpc 或 tls（grpc 走 TLS1.3 + h2，外观为普通 gRPC 流量）。启用前请先在设置中配置 TLS
-              伪装域名。
+              出口链路的传输需为 grpc/tls/wss/mwss/mtls（grpc 走 TLS1.3 + h2，外观为普通 gRPC 流量；wss/mwss 走 TLS1.3 +
+              h2/http1.1，外观为 Go WebSocket 客户端）。启用前请先在设置中配置 TLS 伪装域名。
             </p>
           ) : null}
         </div>

@@ -3,7 +3,8 @@ import { IconSettings } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { api } from "../api";
-import { DataText, FormShell, fail, SubmitButton, TableLoading, TextForm } from "../ui";
+import { confirmDanger } from "../confirm";
+import { DataText, FormShell, fail, NumberForm, SubmitButton, TableLoading, TextForm } from "../ui";
 
 /** 系统设置各二级页面的内容均尚未有后端支撑，先以规划说明占位（tls 除外）。 */
 const SECTIONS = {
@@ -41,34 +42,133 @@ function formatDate(iso: string | null): string {
   return iso.replace("T", " ").slice(0, 16);
 }
 
-/** 链路 TLS 设置：伪装域名（SNI / 证书 SAN）+ 平台证书状态。 */
+/** 链路 TLS 设置：伪装域名（SNI / 证书 SAN）+ 证书画像 + 平台证书状态。
+ * 域名与画像共用一个保存入口：任何会导致证书重签的保存都先经风险确认。 */
+interface ProfileDraft {
+  ca_common_name: string;
+  ca_organization: string;
+  ca_validity_days: number;
+  leaf_validity_days: number;
+}
+
+const FALLBACK_PROFILE: ProfileDraft = {
+  ca_common_name: "",
+  ca_organization: "",
+  ca_validity_days: 3650,
+  leaf_validity_days: 365,
+};
+
 function TlsSettingsSection() {
   const queryClient = useQueryClient();
   const statusQuery = useQuery({ queryKey: ["tls-status"], queryFn: api.tlsStatus });
   const [domain, setDomain] = useState<string | null>(null);
+  const [profileDraft, setProfileDraft] = useState<ProfileDraft | null>(null);
 
   const saveMutation = useMutation({
-    mutationFn: (value: string) => api.setTlsDomain(value),
-    onSuccess: (res) => {
-      toast.success(`TLS 伪装域名已更新为 ${res.domain}（服务端证书已重签，节点将自动拉取）`);
+    mutationFn: async (input: { domain: string; profile: ProfileDraft; saveDomain: boolean; saveProfile: boolean }) => {
+      // Two independent endpoints, sequential: a failure mid-way surfaces the
+      // first error, and the already-applied write is visible in the panel.
+      // scope precedence: all > certs > issued > none.
+      let scope: "none" | "issued" | "certs" | "all" = "none";
+      if (input.saveDomain) {
+        const res = await api.setTlsDomain(input.domain);
+        if (res.issued) scope = "issued";
+        else if (res.changed) scope = "certs";
+      }
+      if (input.saveProfile) {
+        const res = await api.setTlsProfile({
+          ca_common_name: input.profile.ca_common_name.trim(),
+          ca_organization: input.profile.ca_organization.trim(),
+          ca_validity_days: input.profile.ca_validity_days,
+          leaf_validity_days: input.profile.leaf_validity_days,
+        });
+        if (res.regenerated === "all") scope = "all";
+        else if (res.regenerated === "leaves") scope = "certs";
+        else if (res.regenerated === "issued" && scope === "none") scope = "issued";
+      }
+      return scope;
+    },
+    onSuccess: (scope) => {
+      toast.success(
+        scope === "all"
+          ? "设置已保存：整套证书重签完成，配置下发中——TLS 隧道将短暂断连并自动恢复"
+          : scope === "certs"
+            ? "设置已保存：证书已重签，配置下发中——TLS 隧道将短暂断连并自动恢复"
+            : scope === "issued"
+              ? "设置已保存：证书已按当前画像生成，启用 TLS 隧道时自动下发到节点"
+              : "设置已保存（证书无变化，未重签）",
+      );
       queryClient.invalidateQueries({ queryKey: ["tls-status"] });
       setDomain(null);
+      setProfileDraft(null);
     },
     onError: fail,
   });
 
   const status = statusQuery.data;
-  const currentValue = status?.domain ?? null;
-  const editingValue = domain ?? currentValue ?? "";
+  const editingValue = domain ?? status?.domain ?? "";
+  const editingProfile: ProfileDraft = profileDraft ?? status?.profile ?? FALLBACK_PROFILE;
+  const setProfile = (patch: Partial<ProfileDraft>) => setProfileDraft({ ...editingProfile, ...patch });
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const trimmed = editingValue.trim();
-    if (!trimmed) {
+    const trimmedDomain = editingValue.trim();
+    if (!trimmedDomain) {
       toast.danger("请输入伪装域名，如 relay.example.com");
       return;
     }
-    saveMutation.mutate(trimmed);
+    if (!editingProfile.ca_common_name.trim()) {
+      toast.danger("CA 通用名称不能为空");
+      return;
+    }
+    if (editingProfile.ca_validity_days < 366 || editingProfile.leaf_validity_days < 30) {
+      toast.danger("CA 有效期至少 366 天、叶证书有效期至少 30 天");
+      return;
+    }
+    const domainChanged = trimmedDomain !== (status?.domain ?? "");
+    const current = status?.profile;
+    const profileChanged =
+      current !== undefined &&
+      (current.ca_common_name !== editingProfile.ca_common_name.trim() ||
+        current.ca_organization !== editingProfile.ca_organization.trim() ||
+        current.ca_validity_days !== editingProfile.ca_validity_days ||
+        current.leaf_validity_days !== editingProfile.leaf_validity_days);
+    // No material yet (status table shows 未生成): always save — the server
+    // issues the full set even when the values are unchanged, so the user is
+    // never told "nothing to save" while certs are missing.
+    const noMaterial = status?.ca_not_after == null;
+    if (!domainChanged && !profileChanged && !noMaterial) {
+      toast("没有需要保存的变更");
+      return;
+    }
+    const submit = () =>
+      saveMutation.mutate({
+        domain: trimmedDomain,
+        profile: editingProfile,
+        saveDomain: domainChanged,
+        // Forced profile write on the no-material path so the server issues
+        // even when every field matches the stored values.
+        saveProfile: profileChanged || noMaterial,
+      });
+    if (noMaterial) {
+      // Nothing is serving yet, so there is nothing to disrupt: skip the risk
+      // modal — this save only issues fresh certs.
+      submit();
+      return;
+    }
+    // Risk confirmation per regeneration scope: domain → server leaf; CA
+    // identity → whole set (new trust anchor); leaf validity → both leaves.
+    const caIdentityChanged =
+      current !== undefined &&
+      (current.ca_common_name !== editingProfile.ca_common_name.trim() ||
+        current.ca_organization !== editingProfile.ca_organization.trim() ||
+        current.ca_validity_days !== editingProfile.ca_validity_days);
+    const scope = caIdentityChanged ? "整套证书（新 CA + 服务端 + 客户端）" : "证书（服务端 / 客户端叶证书）";
+    confirmDanger(
+      "保存并重签证书？",
+      `本次保存将重新生成${scope}，新证书与配置会立即下发到相关节点，TLS 隧道上的当前连接会断开并自动重连；切换期间（数秒）链路可能握手失败。该操作不可撤销。`,
+      submit,
+    );
   };
 
   return (
@@ -82,12 +182,39 @@ function TlsSettingsSection() {
           <TextForm
             label="伪装域名"
             placeholder="如 relay.example.com"
-            hint="全平台统一：入口拨号 SNI、出口证书 SAN 与 SNI 白名单都用它；修改后服务端证书自动重签"
             value={editingValue}
             onChange={(v) => setDomain(v)}
           />
+          <div className="grid gap-3 border-t border-border pt-3 sm:grid-cols-2">
+            <TextForm
+              label="CA 通用名称"
+              placeholder="如 Example Service CA"
+              value={editingProfile.ca_common_name}
+              onChange={(v) => setProfile({ ca_common_name: v })}
+            />
+            <TextForm
+              label="CA 组织（O）"
+              placeholder="如 example.com，留空省略"
+              value={editingProfile.ca_organization}
+              onChange={(v) => setProfile({ ca_organization: v })}
+            />
+            <NumberForm
+              label="CA 有效期（天）"
+              placeholder="如 3650"
+              hint="366–7300"
+              value={editingProfile.ca_validity_days}
+              onChange={(v) => setProfile({ ca_validity_days: v })}
+            />
+            <NumberForm
+              label="叶证书有效期（天）"
+              placeholder="如 365"
+              hint="30–1825"
+              value={editingProfile.leaf_validity_days}
+              onChange={(v) => setProfile({ leaf_validity_days: v })}
+            />
+          </div>
           <div className="flex justify-end">
-            <SubmitButton isPending={saveMutation.isPending}>保存域名</SubmitButton>
+            <SubmitButton isPending={saveMutation.isPending}>保存设置</SubmitButton>
           </div>
         </FormShell>
 

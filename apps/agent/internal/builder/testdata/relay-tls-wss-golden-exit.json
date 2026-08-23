@@ -13,7 +13,7 @@
         }
       },
       "listener": {
-        "type": "tls",
+        "type": "wss",
         "tls": {
           "certFile": "certs/tls-cert.pem",
           "keyFile": "certs/tls-key.pem",
@@ -22,7 +22,8 @@
             "minVersion": "VersionTLS13",
             "maxVersion": "VersionTLS13",
             "alpn": [
-              "h2"
+              "h2",
+              "http/1.1"
             ]
           },
           "rejectUnknownSNI": true,

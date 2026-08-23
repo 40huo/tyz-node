@@ -144,7 +144,8 @@ func run() error {
 			// applied — GOST resolves the cert paths at service parse time.
 			// No-op when the payload carries no material (and for unchanged
 			// content).
-			if err := certs.Ensure(".", data.TLSMaterial); err != nil {
+			materialChanged, err := certs.Ensure(".", data.TLSMaterial)
+			if err != nil {
 				return fmt.Errorf("persist tls material: %w", err)
 			}
 			gostConfig, err := builder.Build(data)
@@ -158,7 +159,14 @@ func run() error {
 			} else {
 				log.Warn("Rebuild default TLS config failed", "error", err)
 			}
-			return applier.Apply(gostConfig)
+			// A PEM rotation does not change the config structs (they carry
+			// file paths only) — force TLS-terminating services and dialers
+			// through the rebuild path or the new material never loads.
+			var opts []gostapply.ApplyOption
+			if materialChanged {
+				opts = append(opts, gostapply.WithTLSMaterialChange())
+			}
+			return applier.Apply(gostConfig, opts...)
 		},
 	}, log)
 

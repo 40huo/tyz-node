@@ -1,6 +1,7 @@
 package certs
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/x509"
@@ -94,6 +95,24 @@ func TestFixtureChainsAndExtensions(t *testing.T) {
 	if server.DNSNames == nil || server.DNSNames[0] != f.SNI {
 		t.Fatalf("server SAN = %v, want [%s]", server.DNSNames, f.SNI)
 	}
+	// SKI/AKI must be present on every cert and the leaf AKI must reference
+	// the CA SKI — omitting them is a hand-rolled-generator fingerprint.
+	if len(ca.SubjectKeyId) == 0 || len(server.SubjectKeyId) == 0 || len(client.SubjectKeyId) == 0 {
+		t.Fatalf("SKI missing: ca=%d server=%d client=%d", len(ca.SubjectKeyId), len(server.SubjectKeyId), len(client.SubjectKeyId))
+	}
+	if !bytes.Equal(ca.AuthorityKeyId, ca.SubjectKeyId) {
+		t.Fatalf("self-signed CA AKI %x != SKI %x", ca.AuthorityKeyId, ca.SubjectKeyId)
+	}
+	if !bytes.Equal(server.AuthorityKeyId, ca.SubjectKeyId) || !bytes.Equal(client.AuthorityKeyId, ca.SubjectKeyId) {
+		t.Fatalf("leaf AKI does not reference the CA SKI")
+	}
+	// The observable profile: issuer DN strings from the configured identity.
+	if ca.Subject.CommonName != "Example Service CA" || ca.Subject.Organization[0] != "example.com" {
+		t.Fatalf("CA subject = %+v", ca.Subject)
+	}
+	if client.Subject.CommonName != "client."+f.SNI {
+		t.Fatalf("client CN = %q, want client.%s (no -client literal)", client.Subject.CommonName, f.SNI)
+	}
 	hasServerAuth := false
 	for _, eku := range server.ExtKeyUsage {
 		if eku == x509.ExtKeyUsageServerAuth {
@@ -130,8 +149,12 @@ func TestEnsureWritesAndSkipsUnchanged(t *testing.T) {
 		ClientCert: f.ClientCert,
 		ClientKey:  f.ClientKey,
 	}
-	if err := Ensure(dir, material); err != nil {
+	changed, err := Ensure(dir, material)
+	if err != nil {
 		t.Fatalf("Ensure: %v", err)
+	}
+	if !changed {
+		t.Fatalf("first Ensure must report changed=true")
 	}
 	for _, name := range []string{CACertFile, ServerCert, ServerKey, ClientCert, ClientKey} {
 		info, err := os.Stat(filepath.Join(Path(dir), name))
@@ -143,21 +166,30 @@ func TestEnsureWritesAndSkipsUnchanged(t *testing.T) {
 		}
 	}
 
-	// Re-ensure with identical content must not rewrite (mtime stable).
+	// Re-ensure with identical content must not rewrite (mtime stable) and
+	// must report changed=false — that flag gates the gostapply force-rebuild.
 	before, _ := os.Stat(filepath.Join(Path(dir), ServerCert))
 	time.Sleep(10 * time.Millisecond)
-	if err := Ensure(dir, material); err != nil {
+	changed, err = Ensure(dir, material)
+	if err != nil {
 		t.Fatalf("re-Ensure: %v", err)
+	}
+	if changed {
+		t.Fatalf("unchanged material must report changed=false")
 	}
 	after, _ := os.Stat(filepath.Join(Path(dir), ServerCert))
 	if !before.ModTime().Equal(after.ModTime()) {
 		t.Fatalf("unchanged material was rewritten")
 	}
 
-	// Changed content must land on disk.
+	// Changed content must land on disk and flip the flag.
 	material.ServerCert = f.ClientCert
-	if err := Ensure(dir, material); err != nil {
+	changed, err = Ensure(dir, material)
+	if err != nil {
 		t.Fatalf("Ensure after change: %v", err)
+	}
+	if !changed {
+		t.Fatalf("changed material must report changed=true")
 	}
 	got, _ := os.ReadFile(filepath.Join(Path(dir), ServerCert))
 	if string(got) != f.ClientCert {
@@ -165,7 +197,7 @@ func TestEnsureWritesAndSkipsUnchanged(t *testing.T) {
 	}
 
 	// nil material is a no-op.
-	if err := Ensure(dir, nil); err != nil {
-		t.Fatalf("Ensure(nil): %v", err)
+	if changed, err = Ensure(dir, nil); err != nil || changed {
+		t.Fatalf("Ensure(nil) = (%v, %v), want (false, nil)", changed, err)
 	}
 }
