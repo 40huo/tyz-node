@@ -8,7 +8,7 @@ import type {
   Tunnel,
   TunnelPayload,
 } from "@tyz/shared";
-import { ChainType, ForwardMode as ForwardModeEnum, Transport } from "@tyz/shared";
+import { ChainType, ForwardMode as ForwardModeEnum, TLS_LINK_TRANSPORTS } from "@tyz/shared";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { applyRuleQuotas } from "../services/quota";
 import { ensureTlsMaterial } from "../services/tls";
@@ -224,8 +224,9 @@ async function ensureTunnelRelayAuth(db: Database, rows: TunnelRow[]): Promise<v
  * - raw is valid for the single-node shape (one `in` chain — direct forward,
  *   no exit port pairs) and the two-hop shape (one `in` + one `out`); anything
  *   else degrades to relay (which handles 1/2/3+ hops);
- * - tls_enabled requires the 2-hop shape with the out transport grpc|tls,
- *   otherwise the link stays plaintext (consistent on both ends).
+ * - tls_enabled requires the 2-hop shape with a TLS-capable out transport
+ *   (TLS_LINK_TRANSPORTS), otherwise the link stays plaintext (consistent on
+ *   both ends).
  */
 export function normalizeTunnelMode(
   row: TunnelRow,
@@ -237,11 +238,13 @@ export function normalizeTunnelMode(
   const singleNode = tunnelChains.length === 1 && ins.length === 1;
   const forward_mode: ForwardMode =
     row.forward_mode === ForwardModeEnum.RAW && (twoHop || singleNode) ? ForwardModeEnum.RAW : ForwardModeEnum.RELAY;
+  const outTransport = outs[0]?.transport ?? null;
   const tls_enabled =
     row.tls_enabled &&
     forward_mode === "relay" &&
     twoHop &&
-    (outs[0]?.transport === Transport.GRPC || outs[0]?.transport === Transport.TLS);
+    outTransport !== null &&
+    TLS_LINK_TRANSPORTS.has(outTransport);
   return { forward_mode, tls_enabled };
 }
 

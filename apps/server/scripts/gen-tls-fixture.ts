@@ -7,12 +7,19 @@
  * Run inside apps/server: bun run scripts/gen-tls-fixture.ts
  */
 import { mkdirSync, writeFileSync } from "node:fs";
-import { generateTlsMaterial } from "../src/services/tls";
+import { generateTlsMaterial, type TlsProfile } from "../src/services/tls";
+
+const PROFILE: TlsProfile = {
+  ca_common_name: "Example Service CA",
+  ca_organization: "example.com",
+  ca_validity_days: 3650,
+  leaf_validity_days: 365,
+};
 
 const outDir = new URL("../../../apps/agent/internal/certs/testdata/", import.meta.url).pathname;
 mkdirSync(outDir, { recursive: true });
 
-const material = await generateTlsMaterial("relay.example.com");
+const material = await generateTlsMaterial("relay.example.com", PROFILE);
 const fixture = {
   sni: "relay.example.com",
   ca_cert: material.ca.cert_pem,

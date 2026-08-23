@@ -1,6 +1,7 @@
 import { Button, FieldError, Switch, Table } from "@heroui/react";
-import { IconPencil, IconPlus, IconRefresh, IconRoute, IconTrash } from "@tabler/icons-react";
+import { IconEraser, IconPencil, IconPlus, IconRefresh, IconRoute, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearch } from "@tanstack/react-router";
 import {
   type Chain,
   ChainType,
@@ -13,13 +14,14 @@ import {
   type TunnelWithMeta,
 } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
 import { chainTypeLabel, FORWARD_MODE_HINTS, forwardModeLabel } from "../labels";
+import { nodesListOptions, tunnelsListOptions } from "../queries";
 import {
   DataText,
   emptyState,
+  FilterSelect,
   type FormErrors,
   FormFooter,
   FormModal,
@@ -38,6 +40,7 @@ import {
   TableError,
   TableLoading,
   TextForm,
+  ToolbarButton,
   useCrudMutation,
   useFormValues,
 } from "../ui";
@@ -169,8 +172,8 @@ function TunnelForm({
           </Switch>
           {values.tls_enabled ? (
             <p className="text-muted">
-              出口链路的传输需为 grpc 或 tls（grpc 走 TLS1.3 + h2，外观为普通 gRPC 流量）。启用前请先在设置中配置 TLS
-              伪装域名。
+              出口链路的传输需为 grpc/tls/wss/mwss/mtls（grpc 走 TLS1.3 + h2，外观为普通 gRPC 流量；wss/mwss 走 TLS1.3 +
+              h2/http1.1，外观为 Go WebSocket 客户端）。启用前请先在设置中配置 TLS 伪装域名。
             </p>
           ) : null}
         </div>
@@ -464,16 +467,25 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
 
 // ---- Page ----
 
+type TunnelModeFilter = "all" | ForwardMode;
+
+const TUNNEL_MODE_FILTERS: { value: TunnelModeFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: ForwardMode.RELAY, label: forwardModeLabel(ForwardMode.RELAY).label },
+  { value: ForwardMode.RAW, label: forwardModeLabel(ForwardMode.RAW).label },
+];
+
 export default function TunnelsPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<TunnelWithMeta | null>(null);
-  const [searchParams] = useSearchParams();
-  const [creating, setCreating] = useState(searchParams.get("create") === "1");
+  const { create: createParam } = useSearch({ strict: false }) as { create?: "1" };
+  const [creating, setCreating] = useState(createParam === "1");
   const [chainsOf, setChainsOf] = useState<TunnelWithMeta | null>(null);
   const [search, setSearch] = useState("");
+  const [modeFilter, setModeFilter] = useState<TunnelModeFilter>("all");
 
-  const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
+  const tunnelsQuery = useQuery(tunnelsListOptions);
+  const nodesQuery = useQuery(nodesListOptions);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["tunnels"] });
   const deleteMutation = useMutation({ mutationFn: api.deleteTunnel, onSuccess: invalidate, onError: fail });
@@ -482,29 +494,45 @@ export default function TunnelsPage() {
   const tunnels = useMemo(() => {
     const q = search.trim().toLowerCase();
     const all = tunnelsQuery.data?.tunnels ?? [];
-    if (!q) return all;
-    return all.filter((t) =>
-      [String(t.id), t.name, t.description ?? "", t.ingress_display_address ?? ""].some((field) =>
+    return all.filter((t) => {
+      if (modeFilter !== "all" && t.forward_mode !== modeFilter) return false;
+      if (!q) return true;
+      return [String(t.id), t.name, t.description ?? "", t.ingress_display_address ?? ""].some((field) =>
         field.toLowerCase().includes(q),
-      ),
-    );
-  }, [tunnelsQuery.data, search]);
+      );
+    });
+  }, [tunnelsQuery.data, search, modeFilter]);
 
   return (
     <PageShell>
-      <PageHeader
-        title="隧道列表"
-        description="隧道由一组有序链路组成，串联入口、中继与出口节点"
+      <PageHeader title="隧道列表" description="隧道由一组有序链路组成，串联入口、中继与出口节点" />
+      <ListToolbar
         action={
           <Button onPress={() => setCreating(true)}>
             <IconPlus size={16} />
             新建隧道
           </Button>
         }
-      />
-      <ListToolbar>
-        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => tunnelsQuery.refetch()} />
+      >
         <SearchInput value={search} onChange={setSearch} placeholder="搜索隧道" />
+        <FilterSelect label="转发模式筛选" options={TUNNEL_MODE_FILTERS} value={modeFilter} onChange={setModeFilter} />
+        <ToolbarButton
+          icon={<IconEraser size={16} stroke={2} />}
+          isDisabled={search === "" && modeFilter === "all"}
+          onPress={() => {
+            setSearch("");
+            setModeFilter("all");
+          }}
+        >
+          重置
+        </ToolbarButton>
+        <ToolbarButton
+          icon={<IconRefresh size={16} stroke={2} />}
+          spinning={tunnelsQuery.isFetching}
+          onPress={() => tunnelsQuery.refetch()}
+        >
+          刷新
+        </ToolbarButton>
       </ListToolbar>
       {tunnelsQuery.isError ? (
         <TableError onRetry={() => tunnelsQuery.refetch()} />
@@ -530,7 +558,9 @@ export default function TunnelsPage() {
               </Table.Header>
               <Table.Body
                 items={tunnels}
-                renderEmptyState={emptyState(search ? "没有匹配的结果" : "暂无数据，点击「新建隧道」开始")}
+                renderEmptyState={emptyState(
+                  search || modeFilter !== "all" ? "没有匹配的结果" : "暂无数据，点击「新建隧道」开始",
+                )}
               >
                 {(t) => (
                   <Table.Row id={t.id}>

@@ -51,10 +51,44 @@ type Applier struct {
 	// HealthSnapshot with state "apply_failed" so the operator sees WHY a
 	// rule is not forwarding. Guarded by mu.
 	skipped map[string]string
+	// forceTLS is set for the duration of one Apply when the caller passed
+	// WithTLSMaterialChange: GOST parses cert files once at parse time, so a
+	// PEM rotation underneath unchanged config structs (the config references
+	// file paths only) must force TLS-terminating services and chain dialers
+	// through the changed path or the new material never takes effect.
+	forceTLS bool
 }
 
 func New(log *slog.Logger) *Applier {
 	return &Applier{log: log}
+}
+
+// ApplyOption tunes one Apply call.
+type ApplyOption func(*Applier)
+
+// WithTLSMaterialChange marks the certs/ files as rewritten since the last
+// apply: TLS listeners are closed and re-served (their connections drop) and
+// TLS chain dialers are re-registered, even when the config structs are
+// unchanged.
+func WithTLSMaterialChange() ApplyOption {
+	return func(a *Applier) { a.forceTLS = true }
+}
+
+// tlsChain reports whether any node of the chain dials with TLS.
+func tlsChain(cfg *config.ChainConfig) bool {
+	for _, hop := range cfg.Hops {
+		for _, node := range hop.Nodes {
+			if node != nil && node.Dialer != nil && node.Dialer.TLS != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// tlsService reports whether the service terminates TLS on its listener.
+func tlsService(cfg *config.ServiceConfig) bool {
+	return cfg.Listener != nil && cfg.Listener.TLS != nil
 }
 
 // Apply diffs desired against the running registries and mutates them.
@@ -67,9 +101,14 @@ func New(log *slog.Logger) *Applier {
 // on the next poll (recovering transient conflicts like a zombie port
 // holder). a.last still records the desired config so the retry does not
 // needlessly rebuild the services that DID apply.
-func (a *Applier) Apply(desired *config.Config) error {
+func (a *Applier) Apply(desired *config.Config, opts ...ApplyOption) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.forceTLS = false
+	for _, opt := range opts {
+		opt(a)
+	}
+	defer func() { a.forceTLS = false }()
 
 	var last *config.Config
 	if a.last != nil {
@@ -312,7 +351,7 @@ func (a *Applier) stageChains(last, desired []*config.ChainConfig) ([]stagedChai
 	var staged []stagedChain
 	for _, cfg := range desired {
 		exists := reg.IsRegistered(cfg.Name)
-		if exists && containsEqual(last, cfg) {
+		if exists && containsEqual(last, cfg) && !(a.forceTLS && tlsChain(cfg)) {
 			continue // unchanged, leave the running chain alone
 		}
 		ch, err := chain_parser.ParseChain(cfg, corelogger.Default())
@@ -437,12 +476,15 @@ func (a *Applier) reconcileServices(last, desired []*config.ServiceConfig) map[s
 	for _, cfg := range desired {
 		exists := reg.IsRegistered(cfg.Name)
 		dead := exists && isServiceDead(reg.Get(cfg.Name))
-		changed := (exists && !containsEqual(last, cfg)) || dead
+		materialSwapped := a.forceTLS && tlsService(cfg)
+		changed := (exists && (!containsEqual(last, cfg) || materialSwapped)) || dead
 		if exists && !changed {
 			continue
 		}
 		if dead {
 			a.log.Warn("GOST service died, rebuilding", "name", cfg.Name)
+		} else if materialSwapped && containsEqual(last, cfg) {
+			a.log.Info("TLS material changed, rebuilding TLS service", "name", cfg.Name)
 		}
 		if exists {
 			old := reg.Get(cfg.Name)

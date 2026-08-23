@@ -1,9 +1,10 @@
 import { toast } from "@heroui/react";
 import { IconLock, IconLockCheck, IconUser } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { type FormEvent, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
 import { api } from "../api";
+import { setupStatusOptions } from "../queries";
 import { AuthCard, DataText, FormShell, fail, IconTextField, SubmitButton } from "../ui";
 
 const USERNAME_RE = /^[A-Za-z0-9_-]{3,32}$/;
@@ -17,14 +18,10 @@ interface SetupValues {
 /** First-run wizard: create the admin account straight after deployment. */
 export default function SetupPage() {
   const navigate = useNavigate();
-  const status = useQuery({ queryKey: ["setup-status"], queryFn: api.setupStatus, retry: 1 });
+  const status = useQuery(setupStatusOptions);
   const [values, setValues] = useState<SetupValues>({ username: "", password: "", confirm: "" });
   const [errors, setErrors] = useState<{ username?: string; password?: string; confirm?: string }>({});
   const [pending, setPending] = useState(false);
-
-  if (status.data?.initialized) {
-    return <Navigate to="/login" replace />;
-  }
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -38,7 +35,7 @@ export default function SetupPage() {
       setPending(true);
       await api.initSetup({ username: values.username, password: values.password });
       toast.success("管理员账号已创建");
-      navigate("/");
+      navigate({ to: "/" });
     } catch (error) {
       fail(error);
     } finally {

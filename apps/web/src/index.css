@@ -46,9 +46,27 @@
   --warning-foreground: oklch(15% 0.0457 80.6);
   --accent-soft-foreground: oklch(0 0 0);
 
-  /* 全局圆角 small：组件与 Tailwind rounded-* 派生自 --radius；表单控件走 --field-radius（默认 ×1.5），一并钉到同档 */
+  /* 全局圆角 small：整套刻度派生自 --radius，HeroUI 组件与 Tailwind rounded-* 共用。
+   * 面板/弹层档（2xl/3xl：Card、Modal、Drawer、Select、Toast…）统一取表格外框同款 ×2.5；
+   * 低档（xs–xl）在当前基值下与 Tailwind 默认静态值一致（2/4/6/8/12px），定义成派生式仅为未来整体调档。
+   * 表单控件走 --field-radius（默认 ×1.5），一并钉到同档 */
   --radius: 0.25rem;
   --field-radius: 0.25rem;
+  --radius-xs: calc(var(--radius) - 2px);
+  --radius-sm: var(--radius);
+  --radius-md: calc(var(--radius) + 2px);
+  --radius-lg: calc(var(--radius) + 4px);
+  --radius-xl: calc(var(--radius) + 8px);
+  --radius-2xl: calc(var(--radius) * 2.5);
+  --radius-3xl: calc(var(--radius) * 2.5);
+}
+
+/*
+ * Surface 组件本身不带圆角（官方示例全靠手写 rounded-3xl）——本站所有 Surface 面板
+ * 统一取面板档 token（与表格/Card/弹层同档）；用法上不要再手写 rounded-*。
+ */
+.surface {
+  border-radius: var(--radius-3xl);
 }
 
 /*

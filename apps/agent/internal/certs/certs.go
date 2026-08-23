@@ -36,13 +36,17 @@ func Path(base string) string {
 // Ensure writes the PEM files for material into base/certs, creating the
 // directory as needed. Files whose content is unchanged are left alone — a
 // rewrite would only churn mtimes (the config references paths, not hashes,
-// but the agent's own diff/debug output benefits from stability).
-func Ensure(base string, material *model.TLSMaterial) error {
+// but the agent's own diff/debug output benefits from stability). The boolean
+// reports whether ANY file was created or rewritten: the caller feeds it into
+// gostapply as WithTLSMaterialChange so TLS-terminating services and chain
+// dialers are rebuilt (GOST parses the cert files once at parse time — without
+// the forced rebuild a rotated PEM would only take effect after a restart).
+func Ensure(base string, material *model.TLSMaterial) (bool, error) {
 	if material == nil {
-		return nil
+		return false, nil
 	}
 	if err := os.MkdirAll(Path(base), dirPerm); err != nil {
-		return fmt.Errorf("create certs dir: %w", err)
+		return false, fmt.Errorf("create certs dir: %w", err)
 	}
 	files := map[string]string{
 		CACertFile: material.CACert,
@@ -51,19 +55,21 @@ func Ensure(base string, material *model.TLSMaterial) error {
 		ClientCert: material.ClientCert,
 		ClientKey:  material.ClientKey,
 	}
+	changed := false
 	for name, pem := range files {
 		if pem == "" {
-			return fmt.Errorf("tls material: %s is empty", name)
+			return false, fmt.Errorf("tls material: %s is empty", name)
 		}
 		target := filepath.Join(Path(base), name)
 		if current, err := os.ReadFile(target); err == nil && string(current) == pem {
 			continue
 		}
 		if err := writeAtomic(target, []byte(pem)); err != nil {
-			return fmt.Errorf("write %s: %w", name, err)
+			return false, fmt.Errorf("write %s: %w", name, err)
 		}
+		changed = true
 	}
-	return nil
+	return changed, nil
 }
 
 // writeAtomic mirrors loop/cache.go: temp file + fsync + rename, so power

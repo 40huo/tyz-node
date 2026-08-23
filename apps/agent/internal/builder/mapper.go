@@ -8,12 +8,21 @@ import (
 	"github.com/laoshan-tech/tyz/apps/agent/internal/model"
 )
 
-// dialerType maps an internal transport to a GOST dialer/listener type.
-func dialerType(t model.Transport) string {
+// dialerType maps an internal transport to a GOST dialer/listener type. When
+// the link carries platform TLS the WebSocket transports must use their
+// native TLS types: gost's "ws"/"mws" listeners ignore configured TLS
+// material (plaintextListeners in x/config/parsing/service) and would silently
+// stay plaintext; "wss"/"mwss" terminate TLS themselves.
+func dialerType(t model.Transport, tls bool) string {
 	switch t {
 	case model.TransportRaw:
 		return "tcp"
-	case model.TransportWS, model.TransportWSS:
+	case model.TransportWS:
+		return "ws"
+	case model.TransportWSS:
+		if tls {
+			return "wss"
+		}
 		return "ws"
 	case model.TransportTLS:
 		return "tls"
@@ -22,6 +31,9 @@ func dialerType(t model.Transport) string {
 	case model.TransportMTLS:
 		return "mtls"
 	case model.TransportMWSS:
+		if tls {
+			return "mwss"
+		}
 		return "mws"
 	default:
 		return "tcp"

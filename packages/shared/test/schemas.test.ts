@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { agentStatsBatchSchema } from "./schemas";
+import { agentStatsBatchSchema } from "../src/schemas";
 
 describe("agentStatsBatchSchema", () => {
   test("accepts a nil-samples idle flush (Go marshals nil slices as null)", () => {

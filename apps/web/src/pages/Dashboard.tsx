@@ -1,13 +1,14 @@
 import { Card, Skeleton, Tabs } from "@heroui/react";
 import { IconArrowsExchange, IconNetwork, IconPlus, IconServer, IconUsers } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
+import { Link, type LinkProps } from "@tanstack/react-router";
 import type { DashboardSummary } from "@tyz/shared";
 import { type ReactNode, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { api } from "../api";
 import { formatTraffic } from "../format";
 import { auditActionLabel } from "../labels";
+import { dashboardSummaryOptions } from "../queries";
 import { cn, DataText, PageHeader, PageShell, StatusChip } from "../ui";
 
 const REFRESH_MS = 60_000;
@@ -38,7 +39,7 @@ function StatusCard({
   value,
   hint,
 }: {
-  to: string;
+  to: LinkProps["to"];
   tone?: keyof typeof CARD_TONES;
   icon: ReactNode;
   label: string;
@@ -234,6 +235,7 @@ function NodeHealthWall({ nodes, loading }: { nodes: DashboardSummary["nodes_hea
               <Link
                 key={n.node_id}
                 to="/nodes"
+                search={{}}
                 className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 outline-accent transition-colors hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-2"
               >
                 <div className="flex min-w-0 items-center gap-2">
@@ -387,8 +389,7 @@ function RecentActivityCard() {
 
 export default function DashboardPage() {
   const summaryQuery = useQuery({
-    queryKey: ["dashboard-summary"],
-    queryFn: api.dashboardSummary,
+    ...dashboardSummaryOptions,
     refetchInterval: REFRESH_MS,
   });
   const summary = summaryQuery.data;

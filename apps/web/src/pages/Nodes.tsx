@@ -3,6 +3,7 @@ import {
   IconChartBar,
   IconCheck,
   IconCopy,
+  IconEraser,
   IconKey,
   IconPencil,
   IconPlus,
@@ -10,16 +11,18 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearch } from "@tanstack/react-router";
 import type { CreateNodeInput, DashboardSummary, NodeWithMeta } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
 import { formatTraffic } from "../format";
 import { serviceStateLabel } from "../labels";
+import { nodesListOptions } from "../queries";
 import {
   DataText,
   emptyState,
+  FilterSelect,
   type FormErrors,
   FormFooter,
   FormModal,
@@ -38,6 +41,7 @@ import {
   TableError,
   TableLoading,
   TextForm,
+  ToolbarButton,
   useCrudMutation,
   useFormValues,
 } from "../ui";
@@ -318,21 +322,36 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
     queryFn: () => api.nodeHealth(node.id),
     refetchInterval: 10_000,
   });
-  const metricsQuery = useQuery({ queryKey: ["node-metrics", node.id], queryFn: () => api.nodeMetrics(node.id, 24) });
 
   const health = healthQuery.data?.rows ?? [];
   const unhealthy = health.filter((h) => h.state !== "ready");
-  const connStats = new Map<string, { avg: number; max: number }>();
-  for (const m of metricsQuery.data?.rows ?? []) {
-    const cur = connStats.get(m.service) ?? { avg: 0, max: 0 };
-    connStats.set(m.service, {
-      avg: cur.avg + m.conn_sum / Math.max(1, m.samples),
-      max: Math.max(cur.max, m.conn_max),
-    });
-  }
 
   const stats = statsQuery.data?.rows ?? [];
-  const pageSize = 20;
+  // 每个服务的当前连接数。gost 上报两类采样:client 为空的服务级样本(currentConns 即
+  // 该服务当前总连接)和按 client 拆分的样本;有服务级样本以其为准,否则取各 client
+  // 最新值求和。rows 按时间倒序,首个命中即该 key 的最新样本。
+  const currentConns = new Map<string, number>();
+  {
+    const serviceLevel = new Map<string, number>();
+    const byClient = new Map<string, Map<string, number>>();
+    for (const row of stats) {
+      const client = row.stats.client ?? "";
+      if (client === "") {
+        if (!serviceLevel.has(row.service)) serviceLevel.set(row.service, row.stats.currentConns);
+      } else {
+        const m = byClient.get(row.service);
+        if (m === undefined) byClient.set(row.service, new Map([[client, row.stats.currentConns]]));
+        else if (!m.has(client)) m.set(client, row.stats.currentConns);
+      }
+    }
+    for (const [service, m] of byClient)
+      currentConns.set(
+        service,
+        [...m.values()].reduce((a, b) => a + b, 0),
+      );
+    for (const [service, n] of serviceLevel) currentConns.set(service, n);
+  }
+  const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(stats.length / pageSize));
   const safePage = Math.min(page, pageCount);
   const pageRows = stats.slice((safePage - 1) * pageSize, safePage * pageSize);
@@ -360,39 +379,34 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
             <p className="py-4 text-sm text-muted">暂无健康数据（agent 未上报或节点空闲）</p>
           ) : (
             <div className="flex flex-col gap-1">
-              {health.map((h) => {
-                const conn = connStats.get(h.service);
-                return (
-                  <div
-                    key={h.service}
-                    className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-1.5"
-                  >
-                    <div className="flex min-w-0 items-center gap-2">
-                      <DataText className="truncate">{h.service}</DataText>
-                      {conn && (
-                        <span className="shrink-0 text-xs text-muted">
-                          24h 峰值 {conn.max} · 均值 {conn.avg.toFixed(1)}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      {h.error && (
-                        <Tooltip delay={0}>
-                          <Tooltip.Trigger>
-                            <span className="max-w-[280px] truncate text-xs text-danger">{h.error}</span>
-                          </Tooltip.Trigger>
-                          <Tooltip.Content className="max-w-sm">
-                            <p>{h.error}</p>
-                          </Tooltip.Content>
-                        </Tooltip>
-                      )}
-                      <StatusChip tone={serviceStateLabel(h.state).tone} title={h.state}>
-                        {serviceStateLabel(h.state).label}
-                      </StatusChip>
-                    </div>
+              {health.map((h) => (
+                <div
+                  key={h.service}
+                  className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-1.5"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <DataText className="truncate">{h.service}</DataText>
+                    {currentConns.has(h.service) && (
+                      <span className="shrink-0 text-xs text-muted">当前 {currentConns.get(h.service)} 连接</span>
+                    )}
                   </div>
-                );
-              })}
+                  <div className="flex shrink-0 items-center gap-2">
+                    {h.error && (
+                      <Tooltip delay={0}>
+                        <Tooltip.Trigger>
+                          <span className="max-w-[280px] truncate text-xs text-danger">{h.error}</span>
+                        </Tooltip.Trigger>
+                        <Tooltip.Content className="max-w-sm">
+                          <p>{h.error}</p>
+                        </Tooltip.Content>
+                      </Tooltip>
+                    )}
+                    <StatusChip tone={serviceStateLabel(h.state).tone} title={h.state}>
+                      {serviceStateLabel(h.state).label}
+                    </StatusChip>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </section>
@@ -424,7 +438,7 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
                       </Table.Cell>
                       <Table.Cell>
                         <DataText>
-                          {row.stats.inputBytes} / {row.stats.outputBytes} B
+                          {formatTraffic(row.stats.inputBytes)} / {formatTraffic(row.stats.outputBytes)}
                         </DataText>
                       </Table.Cell>
                       <Table.Cell>{row.stats.totalErrs}</Table.Cell>
@@ -447,6 +461,21 @@ function StatsDrawer({ node, onClose }: { node: NodeWithMeta; onClose: () => voi
 // ---- Health column ----
 
 type NodeHealthSummary = DashboardSummary["nodes_health"][number];
+
+type NodeHealthFilter = "all" | "ready" | "abnormal" | "unreported";
+
+const NODE_HEALTH_FILTERS: { value: NodeHealthFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "ready", label: "正常" },
+  { value: "abnormal", label: "异常" },
+  { value: "unreported", label: "未上报" },
+];
+
+/** 健康筛选口径与 NodeHealthChip 一致：failed+apply_failed 计为异常，0 服务/缺行 = 未上报。 */
+function nodeHealthKind(health: NodeHealthSummary | undefined): Exclude<NodeHealthFilter, "all"> {
+  if (health === undefined || health.services === 0) return "unreported";
+  return health.failed > 0 ? "abnormal" : "ready";
+}
 
 /** 列表行健康 chip：口径与控制台健康墙一致（failed+apply_failed 计为异常，0 服务 = 未上报）。 */
 function NodeHealthChip({ health }: { health: NodeHealthSummary | undefined }) {
@@ -477,13 +506,14 @@ function NodeHealthChip({ health }: { health: NodeHealthSummary | undefined }) {
 export default function NodesPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<NodeWithMeta | null>(null);
-  const [searchParams] = useSearchParams();
-  const [creating, setCreating] = useState(searchParams.get("create") === "1");
+  const { create: createParam } = useSearch({ strict: false }) as { create?: "1" };
+  const [creating, setCreating] = useState(createParam === "1");
   const [token, setToken] = useState<string | null>(null);
   const [statsNode, setStatsNode] = useState<NodeWithMeta | null>(null);
   const [search, setSearch] = useState("");
+  const [healthFilter, setHealthFilter] = useState<NodeHealthFilter>("all");
 
-  const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
+  const nodesQuery = useQuery(nodesListOptions);
   // 复用控制台汇总的 nodes_health 聚合（一次请求拿全部节点），列表页据此给出异常标识
   const healthQuery = useQuery({
     queryKey: ["nodes-health"],
@@ -511,34 +541,54 @@ export default function NodesPage() {
   const nodes = useMemo(() => {
     const q = search.trim().toLowerCase();
     const all = nodesQuery.data?.nodes ?? [];
-    if (!q) return all;
-    return all.filter((n) =>
-      [String(n.id), n.name, n.address, n.display_address ?? ""].some((field) => field.toLowerCase().includes(q)),
-    );
-  }, [nodesQuery.data, search]);
+    const healthByNode = new Map(healthQuery.data?.nodes_health.map((h) => [h.node_id, h]));
+    return all.filter((n) => {
+      if (healthFilter !== "all" && nodeHealthKind(healthByNode.get(n.id)) !== healthFilter) return false;
+      if (!q) return true;
+      return [String(n.id), n.name, n.address, n.display_address ?? ""].some((field) =>
+        field.toLowerCase().includes(q),
+      );
+    });
+  }, [nodesQuery.data, healthQuery.data, search, healthFilter]);
 
   return (
     <PageShell>
-      <PageHeader
-        title="节点列表"
-        description="管理 GOST 中继节点及其接入配置"
+      <PageHeader title="节点列表" description="管理 GOST 中继节点及其接入配置" />
+      <ListToolbar
         action={
           <Button onPress={() => setCreating(true)}>
             <IconPlus size={16} />
             新建节点
           </Button>
         }
-      />
-      <ListToolbar>
-        <IconAction
-          label="刷新"
+      >
+        <SearchInput value={search} onChange={setSearch} placeholder="搜索节点 / 地址" />
+        <FilterSelect
+          label="健康状态筛选"
+          options={NODE_HEALTH_FILTERS}
+          value={healthFilter}
+          onChange={setHealthFilter}
+        />
+        <ToolbarButton
+          icon={<IconEraser size={16} stroke={2} />}
+          isDisabled={search === "" && healthFilter === "all"}
+          onPress={() => {
+            setSearch("");
+            setHealthFilter("all");
+          }}
+        >
+          重置
+        </ToolbarButton>
+        <ToolbarButton
           icon={<IconRefresh size={16} stroke={2} />}
+          spinning={nodesQuery.isFetching}
           onPress={() => {
             nodesQuery.refetch();
             healthQuery.refetch();
           }}
-        />
-        <SearchInput value={search} onChange={setSearch} placeholder="搜索节点 / 地址" />
+        >
+          刷新
+        </ToolbarButton>
       </ListToolbar>
       {nodesQuery.isError ? (
         <TableError onRetry={() => nodesQuery.refetch()} />
@@ -576,7 +626,9 @@ export default function NodesPage() {
               </Table.Header>
               <Table.Body
                 items={nodes}
-                renderEmptyState={emptyState(search ? "没有匹配的结果" : "暂无数据，点击「新建节点」开始")}
+                renderEmptyState={emptyState(
+                  search || healthFilter !== "all" ? "没有匹配的结果" : "暂无数据，点击「新建节点」开始",
+                )}
               >
                 {(n) => (
                   <Table.Row id={n.id}>

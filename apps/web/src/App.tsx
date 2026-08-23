@@ -19,29 +19,20 @@ import {
   IconUsers,
 } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
+import { Link, type LinkProps, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useState } from "react";
-import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, setUnauthorizedHandler } from "./api";
-import AuditPage from "./pages/Audit";
-import DashboardPage from "./pages/Dashboard";
-import EndpointsPage from "./pages/Endpoints";
-import LoginPage from "./pages/Login";
-import NodesPage from "./pages/Nodes";
-import NotFoundPage from "./pages/NotFound";
-import PackagesPage from "./pages/Packages";
-import ProfilePage from "./pages/Profile";
-import RulesPage from "./pages/Rules";
-import SettingsPage from "./pages/Settings";
-import SetupPage from "./pages/Setup";
-import TunnelsPage from "./pages/Tunnels";
-import UsersPage from "./pages/Users";
+import { meOptions } from "./queries";
 import { useTheme } from "./theme";
 import { Brand, cn } from "./ui";
 
 // ---- Navigation config（侧栏与顶栏标题的唯一来源） ----
 
+/** 类型化路由目标（LinkProps["to"] 去掉可选性，供 pageTitle/isActive 等按 string 消费）。 */
+type RouteTo = NonNullable<LinkProps["to"]>;
+
 interface NavEntry {
-  to: string;
+  to: RouteTo;
   label: string;
   icon?: ReactNode;
   /** 顶栏标题；缺省用 label。 */
@@ -104,7 +95,7 @@ function NavButton({
   children,
   onNavigate,
 }: {
-  to: string;
+  to: RouteTo;
   label: string;
   className?: string;
   children: ReactNode;
@@ -170,7 +161,7 @@ function GroupLabel({ children, collapsed }: { children: string; collapsed?: boo
 }
 
 function SidebarNav({ collapsed, onNavigate }: { collapsed?: boolean; onNavigate?: () => void }) {
-  const location = useLocation();
+  const location = useRouterState({ select: (s) => s.location });
   const settingsActive = location.pathname.startsWith("/settings");
   const [settingsOpen, setSettingsOpen] = useState(settingsActive);
   const open = settingsOpen || settingsActive;
@@ -266,13 +257,21 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed?: boolean; onNavigate
   );
 }
 
-function AppLayout() {
+export function AppLayout() {
   const navigate = useNavigate();
-  const location = useLocation();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { theme, toggle } = useTheme();
   const [navOpen, setNavOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === "1");
-  const meQuery = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const meQuery = useQuery(meOptions);
+
+  // 401 兜底跳登录（原 App() 内注册迁移至此；布局挂载即生效，login/setup 路径豁免）
+  const redirectToLogin = useCallback(() => {
+    if (!pathname.startsWith("/login") && !pathname.startsWith("/setup")) {
+      navigate({ to: "/login" });
+    }
+  }, [navigate, pathname]);
+  setUnauthorizedHandler(redirectToLogin);
 
   const toggleCollapsed = useCallback(() => {
     setCollapsed((v) => {
@@ -285,7 +284,7 @@ function AppLayout() {
     try {
       await api.logout();
     } finally {
-      navigate("/login");
+      navigate({ to: "/login" });
       toast("已退出");
     }
   }, [navigate]);
@@ -332,7 +331,7 @@ function AppLayout() {
         <span className="md:hidden">
           <Brand />
         </span>
-        <h1 className="hidden text-sm font-medium text-muted md:block">{pageTitle(location.pathname)}</h1>
+        <h1 className="hidden text-sm font-medium text-muted md:block">{pageTitle(pathname)}</h1>
 
         <div className="ml-auto flex items-center gap-1">
           <ThemeToggle isDark={theme === "dark"} onToggle={toggle} />
@@ -340,7 +339,7 @@ function AppLayout() {
             variant="ghost"
             size="sm"
             className="hidden h-8 gap-1.5 px-2 text-muted sm:flex"
-            onPress={() => navigate("/profile")}
+            onPress={() => navigate({ to: "/profile" })}
           >
             <IconUserCircle size={16} stroke={2} />
             {meQuery.data?.username ?? "…"}
@@ -414,42 +413,5 @@ function AppLayout() {
         </div>
       </main>
     </div>
-  );
-}
-
-export default function App() {
-  const navigate = useNavigate();
-  const location = useLocation();
-
-  const redirectToLogin = useCallback(() => {
-    if (!location.pathname.startsWith("/login") && !location.pathname.startsWith("/setup")) {
-      navigate("/login");
-    }
-  }, [location.pathname, navigate]);
-  setUnauthorizedHandler(redirectToLogin);
-
-  return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/setup" element={<SetupPage />} />
-      <Route path="/" element={<AppLayout />}>
-        <Route index element={<DashboardPage />} />
-        <Route path="nodes" element={<NodesPage />} />
-        <Route path="tunnels" element={<TunnelsPage />} />
-        <Route path="rules" element={<RulesPage />} />
-        <Route path="endpoints" element={<EndpointsPage />} />
-        <Route path="users" element={<UsersPage />} />
-        <Route path="packages" element={<PackagesPage />} />
-        <Route path="settings/tls" element={<SettingsPage kind="tls" />} />
-        <Route path="settings/basic" element={<SettingsPage kind="basic" />} />
-        <Route path="settings/notification" element={<SettingsPage kind="notification" />} />
-        <Route path="settings/announcement" element={<SettingsPage kind="announcement" />} />
-        <Route path="settings/site" element={<SettingsPage kind="site" />} />
-        <Route path="settings/audit" element={<AuditPage />} />
-        <Route path="audit" element={<Navigate to="/settings/audit" replace />} />
-        <Route path="profile" element={<ProfilePage />} />
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-    </Routes>
   );
 }

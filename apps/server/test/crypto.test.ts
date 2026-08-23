@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hashPassword, verifyPasswordHash } from "./crypto";
+import { hashPassword, verifyPasswordHash } from "../src/utils/crypto";
 
 /** Round-trip and format checks for the salted-sha256 users.password_hash scheme. */
 describe("password hash", () => {

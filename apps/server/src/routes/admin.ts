@@ -23,8 +23,10 @@ import {
   loginSchema,
   type NodeWithMeta,
   setTlsDomainSchema,
+  setTlsProfileSchema,
   subscribeSchema,
-  Transport,
+  TLS_LINK_TRANSPORTS,
+  type Transport,
   updateChainSchema,
   updateEndpointSchema,
   updateNodeSchema,
@@ -63,7 +65,7 @@ import { listAudit, recordAudit } from "../services/audit";
 import { dashboardSummary, dashboardTraffic } from "../services/dashboard";
 import { broadcastNodeMessage, notifyConfigChanged } from "../services/notify";
 import { getActiveSubscriptions, quotaDecisionsForUsers, userQuotaSummary } from "../services/quota";
-import { getTlsDomain, getTlsStatus, setTlsDomain } from "../services/tls";
+import { getTlsDomain, getTlsStatus, setTlsDomain, setTlsProfile } from "../services/tls";
 import { hashPassword } from "../utils/crypto";
 
 export const adminRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -202,7 +204,8 @@ async function tunnelShape(db: Database, tunnelId: number): Promise<TunnelShape>
 
 /**
  * TLS shape rules: reject only states that can never be completed into the
- * valid 1-in / 1-out grpc|tls shape. A missing side (in-only or out-only) is
+ * valid 1-in / 1-out shape with a TLS-capable out transport (see
+ * TLS_LINK_TRANSPORTS). A missing side (in-only or out-only) is
  * a construction intermediate — links are added one modal at a time, so the
  * strict "exactly two nodes" check would deadlock the very first chain write.
  * Aggregation degrades intermediates to plaintext until the second link lands.
@@ -210,8 +213,8 @@ async function tunnelShape(db: Database, tunnelId: number): Promise<TunnelShape>
 function tlsShapeProblem(shape: TunnelShape): string | null {
   if (shape.ins > 1) return "TLS 隧道只允许一条入口链路";
   if (shape.outs > 1) return "TLS 隧道只允许一条出口链路";
-  if (shape.outs === 1 && shape.outTransport !== Transport.GRPC && shape.outTransport !== Transport.TLS) {
-    return "TLS 要求出口链路的传输为 grpc 或 tls";
+  if (shape.outs === 1 && (shape.outTransport === null || !TLS_LINK_TRANSPORTS.has(shape.outTransport))) {
+    return "TLS 要求出口链路的传输为 grpc/tls/wss/mwss/mtls";
   }
   return null;
 }
@@ -1375,8 +1378,9 @@ adminRoutes.get("/tls/status", async (c) => {
 
 /**
  * Set the platform-wide disguise domain (SNI / serverName / server cert SAN).
- * Changing it re-issues the server certificate; nodes of TLS tunnels pick up
- * the new material via the ordinary recompute → WS push cycle.
+ * A real change re-issues the server certificate; a same-value write is a
+ * no-op. Nodes of TLS tunnels pick up new material via the ordinary
+ * recompute → WS push cycle.
  */
 adminRoutes.put("/settings/tls-domain", async (c) => {
   const parsed = setTlsDomainSchema.safeParse(await readJson(c));
@@ -1385,16 +1389,48 @@ adminRoutes.put("/settings/tls-domain", async (c) => {
   }
   const db = createDb(c.env.DB);
   const previous = await getTlsDomain(db);
-  await setTlsDomain(db, parsed.data.domain);
+  const { changed, issued } = await setTlsDomain(db, parsed.data.domain);
   await recordAudit(c.env, {
     actor: c.get("adminName"),
     action: "settings.tls_domain",
     targetType: "settings",
     targetId: "tls_domain",
-    detail: `${previous ?? "(unset)"} -> ${parsed.data.domain}`,
+    detail: changed ? `${previous ?? "(unset)"} -> ${parsed.data.domain}` : `unchanged (${parsed.data.domain})`,
   });
-  await recomputeTlsNodes(c.env);
-  return c.json({ ok: true, domain: parsed.data.domain });
+  if (changed) {
+    await recomputeTlsNodes(c.env);
+  }
+  return c.json({ ok: true, domain: parsed.data.domain, changed, issued });
+});
+
+/**
+ * Edit the observable certificate profile (issuer DN strings, validity).
+ * CA identity changes rotate the whole set — the link re-handshakes while
+ * entry and exit converge on the recompute+push; leaf-only changes re-issue
+ * the leaves under the existing CA. Public metadata only — safe to audit.
+ */
+adminRoutes.put("/settings/tls-profile", async (c) => {
+  const parsed = setTlsProfileSchema.safeParse(await readJson(c));
+  if (!parsed.success) {
+    return c.json({ error: "invalid tls profile payload", detail: parsed.error.flatten() }, 400);
+  }
+  const db = createDb(c.env.DB);
+  const result = await setTlsProfile(db, parsed.data);
+  await recordAudit(c.env, {
+    actor: c.get("adminName"),
+    action: "settings.tls_profile",
+    targetType: "settings",
+    targetId: "tls_profile",
+    detail: `CA=${result.profile.ca_common_name} O=${result.profile.ca_organization || "(none)"} \
+leafDays=${result.profile.leaf_validity_days} caDays=${result.profile.ca_validity_days} regenerated=${result.regenerated}`,
+  });
+  if (result.regenerated !== "none") {
+    // "issued" means material just appeared — recompute is usually a no-op (no
+    // TLS tunnel can be serving before material existed) but stays cheap and
+    // covers a hand-wiped tls_material while a tunnel was already enabled.
+    await recomputeTlsNodes(c.env);
+  }
+  return c.json({ ok: true, ...result });
 });
 
 /** Admin audit trail, newest first. */

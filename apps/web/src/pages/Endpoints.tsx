@@ -1,14 +1,16 @@
 import { Button, Table } from "@heroui/react";
-import { IconPencil, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
+import { IconEraser, IconPencil, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearch } from "@tanstack/react-router";
 import { type CreateEndpointInput, type Endpoint, type EndpointWithMeta, endpointAddress } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
+import { endpointsListOptions } from "../queries";
 import {
   DataText,
   emptyState,
+  FilterSelect,
   type FormErrors,
   FormFooter,
   FormModal,
@@ -25,6 +27,7 @@ import {
   TableError,
   TableLoading,
   TextForm,
+  ToolbarButton,
   useCrudMutation,
   useFormValues,
 } from "../ui";
@@ -135,14 +138,23 @@ function EndpointForm({
 
 // ---- Page ----
 
+type EndpointRefFilter = "all" | "referenced" | "unreferenced";
+
+const ENDPOINT_REF_FILTERS: { value: EndpointRefFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "referenced", label: "已引用" },
+  { value: "unreferenced", label: "未引用" },
+];
+
 export default function EndpointsPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<Endpoint | null>(null);
-  const [searchParams] = useSearchParams();
-  const [creating, setCreating] = useState(searchParams.get("create") === "1");
+  const { create: createParam } = useSearch({ strict: false }) as { create?: "1" };
+  const [creating, setCreating] = useState(createParam === "1");
   const [search, setSearch] = useState("");
+  const [refFilter, setRefFilter] = useState<EndpointRefFilter>("all");
 
-  const endpointsQuery = useQuery({ queryKey: ["endpoints"], queryFn: api.listEndpoints });
+  const endpointsQuery = useQuery(endpointsListOptions);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["endpoints"] });
   const deleteMutation = useMutation({ mutationFn: api.deleteEndpoint, onSuccess: invalidate, onError: fail });
@@ -150,27 +162,46 @@ export default function EndpointsPage() {
   const endpoints = useMemo(() => {
     const q = search.trim().toLowerCase();
     const all: EndpointWithMeta[] = endpointsQuery.data?.endpoints ?? [];
-    if (!q) return all;
-    return all.filter((e) =>
-      [String(e.id), e.name, e.host, String(e.port), e.note ?? ""].some((field) => field.toLowerCase().includes(q)),
-    );
-  }, [endpointsQuery.data, search]);
+    return all.filter((e) => {
+      if (refFilter === "referenced" && e.rule_count === 0) return false;
+      if (refFilter === "unreferenced" && e.rule_count > 0) return false;
+      if (!q) return true;
+      return [String(e.id), e.name, e.host, String(e.port), e.note ?? ""].some((field) =>
+        field.toLowerCase().includes(q),
+      );
+    });
+  }, [endpointsQuery.data, search, refFilter]);
 
   return (
     <PageShell>
-      <PageHeader
-        title="目标端点列表"
-        description="集中管理转发目标服务，创建规则时可直接选取"
+      <PageHeader title="目标端点列表" description="集中管理转发目标服务，创建规则时可直接选取" />
+      <ListToolbar
         action={
           <Button onPress={() => setCreating(true)}>
             <IconPlus size={16} />
             新建端点
           </Button>
         }
-      />
-      <ListToolbar>
-        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => endpointsQuery.refetch()} />
+      >
         <SearchInput value={search} onChange={setSearch} placeholder="搜索端点 / 主机" />
+        <FilterSelect label="引用状态筛选" options={ENDPOINT_REF_FILTERS} value={refFilter} onChange={setRefFilter} />
+        <ToolbarButton
+          icon={<IconEraser size={16} stroke={2} />}
+          isDisabled={search === "" && refFilter === "all"}
+          onPress={() => {
+            setSearch("");
+            setRefFilter("all");
+          }}
+        >
+          重置
+        </ToolbarButton>
+        <ToolbarButton
+          icon={<IconRefresh size={16} stroke={2} />}
+          spinning={endpointsQuery.isFetching}
+          onPress={() => endpointsQuery.refetch()}
+        >
+          刷新
+        </ToolbarButton>
       </ListToolbar>
       {endpointsQuery.isError ? (
         <TableError onRetry={() => endpointsQuery.refetch()} />
@@ -198,7 +229,9 @@ export default function EndpointsPage() {
               </Table.Header>
               <Table.Body
                 items={endpoints}
-                renderEmptyState={emptyState(search ? "没有匹配的结果" : "暂无数据，点击「新建端点」开始")}
+                renderEmptyState={emptyState(
+                  search || refFilter !== "all" ? "没有匹配的结果" : "暂无数据，点击「新建端点」开始",
+                )}
               >
                 {(e) => (
                   <Table.Row id={e.id}>

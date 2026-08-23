@@ -14,11 +14,11 @@
     "@heroui/react": "^3.2.4",
     "@heroui/styles": "^3.2.4",
     "@tabler/icons-react": "^3.46.0",
-    "@tanstack/react-query": "^5.62.0",
+    "@tanstack/react-query": "^5.102.1",
+    "@tanstack/react-router": "^1.170.32",
     "@tyz/shared": "workspace:*",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router-dom": "^7.1.0",
     "recharts": "^3.10.1",
     "zod": "^3"
   },

@@ -1,14 +1,13 @@
-import { ListBox, Select, Table } from "@heroui/react";
-import { IconRefresh } from "@tabler/icons-react";
+import { Table } from "@heroui/react";
+import { IconEraser, IconRefresh } from "@tabler/icons-react";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { api } from "../api";
 import { auditActionLabel } from "../labels";
+import { auditListOptions } from "../queries";
 import {
   DataText,
   emptyState,
-  FilterTabs,
-  IconAction,
+  FilterSelect,
   ListToolbar,
   PageHeader,
   Pager,
@@ -17,6 +16,7 @@ import {
   StatusChip,
   TableError,
   TableLoading,
+  ToolbarButton,
 } from "../ui";
 
 type ActionKind = "all" | "create" | "update" | "delete" | "ops";
@@ -60,7 +60,7 @@ function timeCutoff(range: TimeRange): number {
 const PAGE_SIZE = 20;
 
 export default function AuditPage() {
-  const auditQuery = useQuery({ queryKey: ["audit"], queryFn: () => api.listAudit(200) });
+  const auditQuery = useQuery(auditListOptions);
   const [actionFilter, setActionFilter] = useState<ActionKind>("all");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const [search, setSearch] = useState("");
@@ -87,30 +87,27 @@ export default function AuditPage() {
     <PageShell>
       <PageHeader title="操作审计" description="管理端写操作留痕（保留 180 天）；敏感值只记录操作本身" />
       <ListToolbar>
-        <FilterTabs label="动作筛选" options={ACTION_FILTERS} value={actionFilter} onChange={setActionFilter} />
-        <Select
-          aria-label="时间范围"
-          value={timeRange}
-          onChange={(v) => setTimeRange((v as TimeRange) ?? "all")}
-          className="w-32"
-        >
-          <Select.Trigger>
-            <Select.Value />
-            <Select.Indicator />
-          </Select.Trigger>
-          <Select.Popover>
-            <ListBox selectionMode="single">
-              {TIME_OPTIONS.map((option) => (
-                <ListBox.Item key={option.value} id={option.value} textValue={option.label}>
-                  {option.label}
-                  <ListBox.ItemIndicator />
-                </ListBox.Item>
-              ))}
-            </ListBox>
-          </Select.Popover>
-        </Select>
-        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => auditQuery.refetch()} />
         <SearchInput value={search} onChange={setSearch} placeholder="搜索操作者 / 详情" />
+        <FilterSelect label="动作筛选" options={ACTION_FILTERS} value={actionFilter} onChange={setActionFilter} />
+        <FilterSelect label="时间范围筛选" options={TIME_OPTIONS} value={timeRange} onChange={setTimeRange} />
+        <ToolbarButton
+          icon={<IconEraser size={16} stroke={2} />}
+          isDisabled={search === "" && actionFilter === "all" && timeRange === "all"}
+          onPress={() => {
+            setSearch("");
+            setActionFilter("all");
+            setTimeRange("all");
+          }}
+        >
+          重置
+        </ToolbarButton>
+        <ToolbarButton
+          icon={<IconRefresh size={16} stroke={2} />}
+          spinning={auditQuery.isFetching}
+          onPress={() => auditQuery.refetch()}
+        >
+          刷新
+        </ToolbarButton>
       </ListToolbar>
       {auditQuery.isError ? (
         <TableError onRetry={() => auditQuery.refetch()} />

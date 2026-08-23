@@ -1,6 +1,7 @@
 import { Button, Table, Tooltip, toast } from "@heroui/react";
 import { IconEraser, IconPencil, IconPlayerPlay, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearch } from "@tanstack/react-router";
 import {
   type AdminRuleRow,
   type CreateRuleInput,
@@ -14,15 +15,15 @@ import {
   type UserListItem,
 } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { confirmDanger } from "../confirm";
 import { formatTraffic } from "../format";
 import { quotaStopReasonLabel, ruleStatusLabel } from "../labels";
+import { endpointsListOptions, rulesListOptions, tunnelsListOptions, usersListOptions } from "../queries";
 import {
   DataText,
   emptyState,
-  FilterTabs,
+  FilterSelect,
   type FormErrors,
   FormFooter,
   FormModal,
@@ -40,6 +41,7 @@ import {
   TableError,
   TableLoading,
   TextForm,
+  ToolbarButton,
   useCrudMutation,
   useFormValues,
 } from "../ui";
@@ -313,18 +315,19 @@ const RULE_FILTERS: { value: RuleFilter; label: string }[] = [
 export default function RulesPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<RelayRule | null>(null);
-  const [searchParams] = useSearchParams();
-  const [creating, setCreating] = useState(searchParams.get("create") === "1");
-  const initialFilter = RULE_FILTERS.some((f) => f.value === searchParams.get("status"))
-    ? (searchParams.get("status") as RuleFilter)
-    : "all";
+  const { create: createParam, status: statusParam } = useSearch({ strict: false }) as {
+    create?: "1";
+    status?: string;
+  };
+  const [creating, setCreating] = useState(createParam === "1");
+  const initialFilter = RULE_FILTERS.some((f) => f.value === statusParam) ? (statusParam as RuleFilter) : "all";
   const [filter, setFilter] = useState<RuleFilter>(initialFilter);
   const [search, setSearch] = useState("");
 
-  const rulesQuery = useQuery({ queryKey: ["rules"], queryFn: api.listRules });
-  const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
-  const usersQuery = useQuery({ queryKey: ["users"], queryFn: api.listUsers });
-  const endpointsQuery = useQuery({ queryKey: ["endpoints"], queryFn: api.listEndpoints });
+  const rulesQuery = useQuery(rulesListOptions);
+  const tunnelsQuery = useQuery(tunnelsListOptions);
+  const usersQuery = useQuery(usersListOptions);
+  const endpointsQuery = useQuery(endpointsListOptions);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["rules"] });
   const deleteMutation = useMutation({ mutationFn: api.deleteRule, onSuccess: invalidate, onError: fail });
@@ -347,22 +350,6 @@ export default function RulesPage() {
   const endpoints = endpointsQuery.data?.endpoints ?? [];
   const rules: AdminRuleRow[] = rulesQuery.data?.rules ?? [];
 
-  const counts = useMemo(() => {
-    const by: Record<RuleFilter, number> = {
-      all: rules.length,
-      created: 0,
-      paused: 0,
-      running: 0,
-      error: 0,
-      quota_stopped: 0,
-    };
-    for (const r of rules) {
-      by[r.status as RuleFilter] = (by[r.status as RuleFilter] ?? 0) + 1;
-      if (r.quota_stopped) by.quota_stopped += 1;
-    }
-    return by;
-  }, [rules]);
-
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rules.filter((r) => {
@@ -375,25 +362,34 @@ export default function RulesPage() {
 
   return (
     <PageShell>
-      <PageHeader
-        title="转发规则列表"
-        description="定义入口节点的监听端口与转发目标"
+      <PageHeader title="转发规则列表" description="定义入口节点的监听端口与转发目标" />
+      <ListToolbar
         action={
           <Button onPress={() => setCreating(true)}>
             <IconPlus size={16} />
             新建规则
           </Button>
         }
-      />
-      <ListToolbar>
-        <FilterTabs
-          label="状态筛选"
-          options={RULE_FILTERS.map((f) => ({ ...f, count: counts[f.value] }))}
-          value={filter}
-          onChange={setFilter}
-        />
-        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => rulesQuery.refetch()} />
+      >
         <SearchInput value={search} onChange={setSearch} placeholder="搜索规则 / 端口 / 目标" />
+        <FilterSelect label="状态筛选" options={RULE_FILTERS} value={filter} onChange={setFilter} />
+        <ToolbarButton
+          icon={<IconEraser size={16} stroke={2} />}
+          isDisabled={search === "" && filter === "all"}
+          onPress={() => {
+            setSearch("");
+            setFilter("all");
+          }}
+        >
+          重置
+        </ToolbarButton>
+        <ToolbarButton
+          icon={<IconRefresh size={16} stroke={2} />}
+          spinning={rulesQuery.isFetching}
+          onPress={() => rulesQuery.refetch()}
+        >
+          刷新
+        </ToolbarButton>
       </ListToolbar>
       {rulesQuery.isError ? (
         <TableError onRetry={() => rulesQuery.refetch()} />
