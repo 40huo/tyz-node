@@ -1,5 +1,5 @@
 import { Button, Table } from "@heroui/react";
-import { IconPencil, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
+import { IconEraser, IconPencil, IconPlus, IconRefresh, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CreatePackageInput, Package, RelayNode, Tunnel } from "@tyz/shared";
 import { type FormEvent, useMemo, useState } from "react";
@@ -9,6 +9,7 @@ import { formatBytes } from "../format";
 import {
   DataText,
   emptyState,
+  FilterSelect,
   type FormErrors,
   FormFooter,
   FormModal,
@@ -26,6 +27,7 @@ import {
   TableError,
   TableLoading,
   TextForm,
+  ToolbarButton,
   useCrudMutation,
   useFormValues,
 } from "../ui";
@@ -179,11 +181,20 @@ function PackageForm({
 
 // ---- Page ----
 
+type PackagePeriodFilter = "all" | "limited" | "permanent";
+
+const PACKAGE_PERIOD_FILTERS: { value: PackagePeriodFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "limited", label: "限期" },
+  { value: "permanent", label: "永久" },
+];
+
 export default function PackagesPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<Package | null>(null);
   const [creating, setCreating] = useState(false);
   const [search, setSearch] = useState("");
+  const [periodFilter, setPeriodFilter] = useState<PackagePeriodFilter>("all");
 
   const packagesQuery = useQuery({ queryKey: ["packages"], queryFn: api.listPackages });
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
@@ -197,25 +208,48 @@ export default function PackagesPage() {
   const packages = useMemo(() => {
     const q = search.trim().toLowerCase();
     const all = packagesQuery.data?.packages ?? [];
-    if (!q) return all;
-    return all.filter((p) => [String(p.id), p.name, p.note ?? ""].some((field) => field.toLowerCase().includes(q)));
-  }, [packagesQuery.data, search]);
+    return all.filter((p) => {
+      if (periodFilter !== "all" && p.period_days > 0 !== (periodFilter === "limited")) return false;
+      if (!q) return true;
+      return [String(p.id), p.name, p.note ?? ""].some((field) => field.toLowerCase().includes(q));
+    });
+  }, [packagesQuery.data, search, periodFilter]);
 
   return (
     <PageShell>
-      <PageHeader
-        title="套餐列表"
-        description="流量配额、有效期、线路授权与规则数上限"
+      <PageHeader title="套餐列表" description="流量配额、有效期、线路授权与规则数上限" />
+      <ListToolbar
         action={
           <Button onPress={() => setCreating(true)}>
             <IconPlus size={16} />
             新建套餐
           </Button>
         }
-      />
-      <ListToolbar>
-        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => packagesQuery.refetch()} />
+      >
         <SearchInput value={search} onChange={setSearch} placeholder="搜索套餐" />
+        <FilterSelect
+          label="有效期筛选"
+          options={PACKAGE_PERIOD_FILTERS}
+          value={periodFilter}
+          onChange={setPeriodFilter}
+        />
+        <ToolbarButton
+          icon={<IconEraser size={16} stroke={2} />}
+          isDisabled={search === "" && periodFilter === "all"}
+          onPress={() => {
+            setSearch("");
+            setPeriodFilter("all");
+          }}
+        >
+          重置
+        </ToolbarButton>
+        <ToolbarButton
+          icon={<IconRefresh size={16} stroke={2} />}
+          spinning={packagesQuery.isFetching}
+          onPress={() => packagesQuery.refetch()}
+        >
+          刷新
+        </ToolbarButton>
       </ListToolbar>
       {packagesQuery.isError ? (
         <TableError onRetry={() => packagesQuery.refetch()} />
@@ -243,7 +277,9 @@ export default function PackagesPage() {
               </Table.Header>
               <Table.Body
                 items={packages}
-                renderEmptyState={emptyState(search ? "没有匹配的结果" : "暂无数据，点击「新建套餐」开始")}
+                renderEmptyState={emptyState(
+                  search || periodFilter !== "all" ? "没有匹配的结果" : "暂无数据，点击「新建套餐」开始",
+                )}
               >
                 {(pkg) => (
                   <Table.Row id={pkg.id}>

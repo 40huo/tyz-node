@@ -3,6 +3,7 @@ import {
   IconBan,
   IconCircleCheck,
   IconCreditCard,
+  IconEraser,
   IconEye,
   IconPlus,
   IconRefresh,
@@ -19,6 +20,7 @@ import { quotaStopReasonLabel, userStatusLabel } from "../labels";
 import {
   DataText,
   emptyState,
+  FilterSelect,
   FormFooter,
   FormModal,
   FormShell,
@@ -34,6 +36,7 @@ import {
   TableError,
   TableLoading,
   TextForm,
+  ToolbarButton,
 } from "../ui";
 
 function CreateUserDialog({ opened, onClose }: { opened: boolean; onClose: () => void }) {
@@ -252,6 +255,14 @@ function UserDetailDialog({
   );
 }
 
+type UserStatusFilter = "all" | UserStatus;
+
+const USER_STATUS_FILTERS: { value: UserStatusFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: UserStatus.ACTIVE, label: userStatusLabel(UserStatus.ACTIVE).label },
+  { value: UserStatus.DISABLED, label: userStatusLabel(UserStatus.DISABLED).label },
+];
+
 export default function UsersPage() {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -259,6 +270,7 @@ export default function UsersPage() {
   const [subscribing, setSubscribing] = useState<UserListItem | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<UserStatusFilter>("all");
 
   const usersQuery = useQuery({ queryKey: ["users"], queryFn: api.listUsers });
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["users"] });
@@ -274,29 +286,45 @@ export default function UsersPage() {
   const users = useMemo(() => {
     const q = search.trim().toLowerCase();
     const all = usersQuery.data?.users ?? [];
-    if (!q) return all;
-    return all.filter((u) =>
-      [String(u.id), u.name, u.note ?? "", u.subscription?.package_name ?? ""].some((field) =>
+    return all.filter((u) => {
+      if (statusFilter !== "all" && u.status !== statusFilter) return false;
+      if (!q) return true;
+      return [String(u.id), u.name, u.note ?? "", u.subscription?.package_name ?? ""].some((field) =>
         field.toLowerCase().includes(q),
-      ),
-    );
-  }, [usersQuery.data, search]);
+      );
+    });
+  }, [usersQuery.data, search, statusFilter]);
 
   return (
     <PageShell>
-      <PageHeader
-        title="用户列表"
-        description="租户及其套餐订阅；配额与线路授权跟随订阅"
+      <PageHeader title="用户列表" description="租户及其套餐订阅；配额与线路授权跟随订阅" />
+      <ListToolbar
         action={
           <Button onPress={() => setCreating(true)}>
             <IconPlus size={16} />
             新建用户
           </Button>
         }
-      />
-      <ListToolbar>
-        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => usersQuery.refetch()} />
+      >
         <SearchInput value={search} onChange={setSearch} placeholder="搜索用户 / 套餐" />
+        <FilterSelect label="状态筛选" options={USER_STATUS_FILTERS} value={statusFilter} onChange={setStatusFilter} />
+        <ToolbarButton
+          icon={<IconEraser size={16} stroke={2} />}
+          isDisabled={search === "" && statusFilter === "all"}
+          onPress={() => {
+            setSearch("");
+            setStatusFilter("all");
+          }}
+        >
+          重置
+        </ToolbarButton>
+        <ToolbarButton
+          icon={<IconRefresh size={16} stroke={2} />}
+          spinning={usersQuery.isFetching}
+          onPress={() => usersQuery.refetch()}
+        >
+          刷新
+        </ToolbarButton>
       </ListToolbar>
       {usersQuery.isError ? (
         <TableError onRetry={() => usersQuery.refetch()} />
@@ -319,7 +347,10 @@ export default function UsersPage() {
                   <span className="flex justify-end">操作</span>
                 </Table.Column>
               </Table.Header>
-              <Table.Body items={users} renderEmptyState={emptyState(search ? "没有匹配的结果" : "暂无用户")}>
+              <Table.Body
+                items={users}
+                renderEmptyState={emptyState(search || statusFilter !== "all" ? "没有匹配的结果" : "暂无用户")}
+              >
                 {(u) => (
                   <Table.Row id={u.id}>
                     <Table.Cell>

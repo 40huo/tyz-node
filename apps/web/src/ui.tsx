@@ -20,7 +20,6 @@ import {
   Select,
   Skeleton,
   Spinner,
-  Tabs,
   TextArea,
   TextField,
   Tooltip,
@@ -379,10 +378,14 @@ export function PageShell({ children }: { children: ReactNode }) {
 
 const SKELETON_ROW_IDS = Array.from({ length: 12 }, (_, i) => i + 1);
 
-/** 表格加载态：骨架行占位（替代居中 Spinner，避免加载完成后布局跳动）。纯视觉占位。 */
+/** 表格加载态：顶部 spin 加载提示 + 骨架行占位（骨架保持布局稳定，避免加载完成后跳动）。 */
 export function TableLoading({ rows = 6 }: { rows?: number }) {
   return (
     <div className="flex flex-col gap-2.5 py-2">
+      <div className="flex items-center justify-center gap-2 py-1 text-sm text-muted">
+        <Spinner size="sm" />
+        加载中…
+      </div>
       {SKELETON_ROW_IDS.slice(0, rows).map((n) => (
         <Skeleton key={n} className="h-9 w-full rounded-md" />
       ))}
@@ -510,43 +513,79 @@ export function SearchInput({
 }
 
 /**
- * 状态筛选：分段控制器（Tabs）——选中项胶囊高亮，观感与控制台的时间范围切换一致，
- * 支持方向键切换。value 含“全部”哨兵值，count 渲染为小号计数。
+ * 列表筛选下拉：无可见 Label（aria-label 提供），选项自带“全部”哨兵值；
+ * variant 与 SearchField 一样走默认 primary（工具栏在页面底色上，primary 是标准描边形态）。
  */
-export function FilterTabs<T extends string>({
+export function FilterSelect<T extends string>({
   options,
   value,
   onChange,
-  label = "筛选",
+  label,
+  className,
 }: {
-  options: { value: T; label: string; count?: number }[];
+  options: { value: T; label: string }[];
   value: T;
   onChange: (value: T) => void;
   /** 无障碍标签（aria-label）。 */
-  label?: string;
+  label: string;
+  className?: string;
 }) {
   return (
-    <Tabs
+    <Select
       aria-label={label}
-      selectedKey={value}
-      onSelectionChange={(key) => onChange(key as T)}
-      className="w-fit shrink-0"
+      value={value}
+      onChange={(key) => {
+        if (key !== null) onChange(key as T);
+      }}
+      className={cn("w-40 shrink-0", className)}
     >
-      <Tabs.List>
-        {options.map((option) => (
-          <Tabs.Tab key={option.value} id={option.value} className="whitespace-nowrap">
-            {option.label}
-            {option.count !== undefined && <span className="ml-1.5 text-xs opacity-60">{option.count}</span>}
-          </Tabs.Tab>
-        ))}
-      </Tabs.List>
-    </Tabs>
+      <Select.Trigger>
+        <Select.Value />
+        <Select.Indicator />
+      </Select.Trigger>
+      <Select.Popover>
+        <ListBox selectionMode="single">
+          {options.map((option) => (
+            <ListBox.Item key={option.value} id={option.value} textValue={option.label}>
+              {option.label}
+              <ListBox.ItemIndicator />
+            </ListBox.Item>
+          ))}
+        </ListBox>
+      </Select.Popover>
+    </Select>
   );
 }
 
-/** 列表页工具栏：筛选 + 搜索靠右对齐（全站约定；窄屏自动换行）。 */
-export function ListToolbar({ children }: { children: ReactNode }) {
-  return <div className="flex flex-wrap items-center justify-end gap-2">{children}</div>;
+/** 工具栏文字按钮：图标 + 文案（重置/刷新），tertiary 灰底与搜索框同行；`spinning` 让图标持续旋转（刷新随请求状态）。 */
+export function ToolbarButton({
+  icon,
+  spinning = false,
+  className,
+  children,
+  ...props
+}: Omit<ComponentProps<typeof Button>, "children" | "className"> & {
+  icon: ReactNode;
+  spinning?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Button variant="tertiary" className={cn("shrink-0", className)} {...props}>
+      {spinning ? <span className="inline-flex animate-spin">{icon}</span> : icon}
+      {children}
+    </Button>
+  );
+}
+
+/** 列表页工具栏：靠左依次为 搜索 → 筛选 → 重置 → 刷新，右侧 `action` 放新建入口（全站约定；窄屏自动换行）。 */
+export function ListToolbar({ children, action }: { children: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">{children}</div>
+      {action !== undefined && <div className="ml-auto shrink-0">{action}</div>}
+    </div>
+  );
 }
 
 // ---- CRUD helpers ----

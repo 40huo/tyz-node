@@ -1,5 +1,5 @@
 import { Button, FieldError, Switch, Table } from "@heroui/react";
-import { IconPencil, IconPlus, IconRefresh, IconRoute, IconTrash } from "@tabler/icons-react";
+import { IconEraser, IconPencil, IconPlus, IconRefresh, IconRoute, IconTrash } from "@tabler/icons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type Chain,
@@ -20,6 +20,7 @@ import { chainTypeLabel, FORWARD_MODE_HINTS, forwardModeLabel } from "../labels"
 import {
   DataText,
   emptyState,
+  FilterSelect,
   type FormErrors,
   FormFooter,
   FormModal,
@@ -38,6 +39,7 @@ import {
   TableError,
   TableLoading,
   TextForm,
+  ToolbarButton,
   useCrudMutation,
   useFormValues,
 } from "../ui";
@@ -464,6 +466,14 @@ function ChainsDrawer({ tunnel, nodes, onClose }: { tunnel: Tunnel; nodes: NodeW
 
 // ---- Page ----
 
+type TunnelModeFilter = "all" | ForwardMode;
+
+const TUNNEL_MODE_FILTERS: { value: TunnelModeFilter; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: ForwardMode.RELAY, label: forwardModeLabel(ForwardMode.RELAY).label },
+  { value: ForwardMode.RAW, label: forwardModeLabel(ForwardMode.RAW).label },
+];
+
 export default function TunnelsPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<TunnelWithMeta | null>(null);
@@ -471,6 +481,7 @@ export default function TunnelsPage() {
   const [creating, setCreating] = useState(searchParams.get("create") === "1");
   const [chainsOf, setChainsOf] = useState<TunnelWithMeta | null>(null);
   const [search, setSearch] = useState("");
+  const [modeFilter, setModeFilter] = useState<TunnelModeFilter>("all");
 
   const tunnelsQuery = useQuery({ queryKey: ["tunnels"], queryFn: api.listTunnels });
   const nodesQuery = useQuery({ queryKey: ["nodes"], queryFn: api.listNodes });
@@ -482,29 +493,45 @@ export default function TunnelsPage() {
   const tunnels = useMemo(() => {
     const q = search.trim().toLowerCase();
     const all = tunnelsQuery.data?.tunnels ?? [];
-    if (!q) return all;
-    return all.filter((t) =>
-      [String(t.id), t.name, t.description ?? "", t.ingress_display_address ?? ""].some((field) =>
+    return all.filter((t) => {
+      if (modeFilter !== "all" && t.forward_mode !== modeFilter) return false;
+      if (!q) return true;
+      return [String(t.id), t.name, t.description ?? "", t.ingress_display_address ?? ""].some((field) =>
         field.toLowerCase().includes(q),
-      ),
-    );
-  }, [tunnelsQuery.data, search]);
+      );
+    });
+  }, [tunnelsQuery.data, search, modeFilter]);
 
   return (
     <PageShell>
-      <PageHeader
-        title="隧道列表"
-        description="隧道由一组有序链路组成，串联入口、中继与出口节点"
+      <PageHeader title="隧道列表" description="隧道由一组有序链路组成，串联入口、中继与出口节点" />
+      <ListToolbar
         action={
           <Button onPress={() => setCreating(true)}>
             <IconPlus size={16} />
             新建隧道
           </Button>
         }
-      />
-      <ListToolbar>
-        <IconAction label="刷新" icon={<IconRefresh size={16} stroke={2} />} onPress={() => tunnelsQuery.refetch()} />
+      >
         <SearchInput value={search} onChange={setSearch} placeholder="搜索隧道" />
+        <FilterSelect label="转发模式筛选" options={TUNNEL_MODE_FILTERS} value={modeFilter} onChange={setModeFilter} />
+        <ToolbarButton
+          icon={<IconEraser size={16} stroke={2} />}
+          isDisabled={search === "" && modeFilter === "all"}
+          onPress={() => {
+            setSearch("");
+            setModeFilter("all");
+          }}
+        >
+          重置
+        </ToolbarButton>
+        <ToolbarButton
+          icon={<IconRefresh size={16} stroke={2} />}
+          spinning={tunnelsQuery.isFetching}
+          onPress={() => tunnelsQuery.refetch()}
+        >
+          刷新
+        </ToolbarButton>
       </ListToolbar>
       {tunnelsQuery.isError ? (
         <TableError onRetry={() => tunnelsQuery.refetch()} />
@@ -530,7 +557,9 @@ export default function TunnelsPage() {
               </Table.Header>
               <Table.Body
                 items={tunnels}
-                renderEmptyState={emptyState(search ? "没有匹配的结果" : "暂无数据，点击「新建隧道」开始")}
+                renderEmptyState={emptyState(
+                  search || modeFilter !== "all" ? "没有匹配的结果" : "暂无数据，点击「新建隧道」开始",
+                )}
               >
                 {(t) => (
                   <Table.Row id={t.id}>
