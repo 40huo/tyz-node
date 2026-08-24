@@ -148,6 +148,9 @@ func run() error {
 			if err != nil {
 				return fmt.Errorf("persist tls material: %w", err)
 			}
+			if materialChanged {
+				log.Info("TLS material updated on disk")
+			}
 			gostConfig, err := builder.Build(data)
 			if err != nil {
 				return fmt.Errorf("build gost config: %w", err)

@@ -11,6 +11,9 @@
 //   - services are not hot-swappable: changed services are closed, re-parsed
 //     and re-served; unchanged ones are left alone.
 //
+// Object lifecycle (create/update/delete) logs at Info: applies are rare, and
+// a silent rebuild would hide certificate reloads from operators.
+//
 // Change detection compares the desired objects against the last successfully
 // applied desired config (in-memory deep equality), not against API echoes.
 package gostapply
@@ -303,7 +306,7 @@ func (a *Applier) deleteKind(kind string, current, desired map[string]struct{}) 
 		case "admissions":
 			registry.AdmissionRegistry().Unregister(name)
 		}
-		a.log.Debug("GOST object deleted", "kind", kind, "name", name)
+		a.log.Info("GOST object deleted", "kind", kind, "name", name)
 	}
 }
 
@@ -329,9 +332,9 @@ func reconcileLimiters[T any](
 			return fmt.Errorf("register %s %q: %w", kind, cfg.Name, err)
 		}
 		if changed {
-			log.Debug("GOST object updated", "kind", kind, "name", cfg.Name)
+			log.Info("GOST object updated", "kind", kind, "name", cfg.Name)
 		} else {
-			log.Debug("GOST object created", "kind", kind, "name", cfg.Name)
+			log.Info("GOST object created", "kind", kind, "name", cfg.Name)
 		}
 	}
 	return nil
@@ -366,13 +369,18 @@ func (a *Applier) stageChains(last, desired []*config.ChainConfig) ([]stagedChai
 func (a *Applier) registerChains(staged []stagedChain) error {
 	reg := registry.ChainRegistry()
 	for _, s := range staged {
-		if reg.IsRegistered(s.cfg.Name) {
+		existed := reg.IsRegistered(s.cfg.Name)
+		if existed {
 			reg.Unregister(s.cfg.Name)
 		}
 		if err := reg.Register(s.cfg.Name, s.ch); err != nil {
 			return fmt.Errorf("register chains %q: %w", s.cfg.Name, err)
 		}
-		a.log.Debug("GOST object updated", "kind", "chains", "name", s.cfg.Name)
+		if existed {
+			a.log.Info("GOST object updated", "kind", "chains", "name", s.cfg.Name)
+		} else {
+			a.log.Info("GOST object created", "kind", "chains", "name", s.cfg.Name)
+		}
 	}
 	return nil
 }
@@ -403,13 +411,18 @@ func (a *Applier) stageAdmissions(last, desired []*config.AdmissionConfig) ([]st
 func (a *Applier) registerAdmissions(staged []stagedAdmission) error {
 	reg := registry.AdmissionRegistry()
 	for _, s := range staged {
-		if reg.IsRegistered(s.cfg.Name) {
+		existed := reg.IsRegistered(s.cfg.Name)
+		if existed {
 			reg.Unregister(s.cfg.Name)
 		}
 		if err := reg.Register(s.cfg.Name, s.adm); err != nil {
 			return fmt.Errorf("register admissions %q: %w", s.cfg.Name, err)
 		}
-		a.log.Debug("GOST object updated", "kind", "admissions", "name", s.cfg.Name)
+		if existed {
+			a.log.Info("GOST object updated", "kind", "admissions", "name", s.cfg.Name)
+		} else {
+			a.log.Info("GOST object created", "kind", "admissions", "name", s.cfg.Name)
+		}
 	}
 	return nil
 }
@@ -436,9 +449,9 @@ func (a *Applier) reconcileQuotas(last, desired []*config.QuotaConfig) error {
 			return fmt.Errorf("register quotas %q: %w", cfg.Name, err)
 		}
 		if changed {
-			a.log.Debug("GOST object updated", "kind", "quotas", "name", cfg.Name)
+			a.log.Info("GOST object updated", "kind", "quotas", "name", cfg.Name)
 		} else {
-			a.log.Debug("GOST object created", "kind", "quotas", "name", cfg.Name)
+			a.log.Info("GOST object created", "kind", "quotas", "name", cfg.Name)
 		}
 	}
 	return nil
@@ -525,9 +538,9 @@ func (a *Applier) reconcileServices(last, desired []*config.ServiceConfig) map[s
 			}
 		}(cfg.Name)
 		if changed && !dead {
-			a.log.Debug("GOST object updated", "kind", "services", "name", cfg.Name)
+			a.log.Info("GOST object updated", "kind", "services", "name", cfg.Name)
 		} else {
-			a.log.Debug("GOST object created", "kind", "services", "name", cfg.Name)
+			a.log.Info("GOST object created", "kind", "services", "name", cfg.Name)
 		}
 	}
 	return skipped
