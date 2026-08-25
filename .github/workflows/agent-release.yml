@@ -6,6 +6,8 @@ on:
 
 jobs:
   agent-binaries:
+    # Skip on forks: releases there belong to the fork; nothing to publish here.
+    if: github.repository_owner == 'laoshan-tech'
     runs-on: ubuntu-latest
     permissions:
       contents: write # attach assets to the release

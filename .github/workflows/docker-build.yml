@@ -16,6 +16,9 @@ env:
 
 jobs:
   build:
+    # Skip on forks: IMAGE_NAME is pinned to this org, and a fork's
+    # GITHUB_TOKEN cannot push to it (the run would only fail confusingly).
+    if: github.repository_owner == 'laoshan-tech'
     runs-on: ubuntu-latest
     permissions:
       contents: read
