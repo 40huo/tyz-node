@@ -1,7 +1,8 @@
 import type { Package, QuotaDecision, RelayRule, RuleQuotaStatus, User, UserSubscription } from "@tyz/shared";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Database } from "../db";
-import { packages, relayRules, userPackages, users } from "../db/schema";
+import { packages, trafficHourly, userPackages, users } from "../db/schema";
+import { hourFloorIso } from "./traffic";
 
 /**
  * Package/subscription enforcement shared by the config aggregator and the
@@ -71,32 +72,66 @@ export async function getUserStatuses(db: Database, userIds: number[]): Promise<
 }
 
 /**
- * CHARGED bytes used by one rule since `sinceIso`, from the hourly traffic
- * ledger (billing source of truth — ingest-time UPSERT accumulation of
- * round(real × node rate)). The window start is floored to its containing
- * hour, so at most one hour of pre-window traffic is included: a
- * conservative, one-time-per-window overcount that never over-delivers
- * allowance. Rules deleted mid-window keep their ledger rows (no FK by
- * design).
+ * CHARGED bytes used across ALL of one user's current rules since `sinceIso`,
+ * from the hourly traffic ledger (billing source of truth — ingest-time UPSERT
+ * accumulation of round(real × node rate)). One aggregate roundtrip via the
+ * relay_rules subquery — the per-rule SUM loop this replaces was O(rules)
+ * sequential D1 queries inside every node recompute. The window start is
+ * floored to its containing hour, so at most one hour of pre-window traffic is
+ * included: a conservative, one-time-per-window overcount that never
+ * over-delivers allowance. Rules deleted mid-window keep their ledger rows (no
+ * FK by design) but stop counting the moment they leave relay_rules.
  */
-export async function ruleUsageBytes(db: Database, ruleId: number, sinceIso: string): Promise<number> {
+async function userUsageBytes(db: Database, userId: number, sinceIso: string): Promise<number> {
   const result = (await db.get(sql`
     SELECT COALESCE(SUM(billed_upload + billed_download), 0) AS used
     FROM traffic_hourly
-    WHERE rule_id = ${ruleId} AND hour_ts >= ${`${sinceIso.slice(0, 13)}:00:00.000Z`}
+    WHERE hour_ts >= ${hourFloorIso(sinceIso)}
+      AND rule_id IN (SELECT id FROM relay_rules WHERE user_id = ${userId})
   `)) as { used: number | null } | undefined;
   return Number(result?.used ?? 0);
 }
 
-/** Resolve allowance decisions for a set of users in one batch (admin lists). */
-export async function quotaDecisionsForUsers(db: Database, userIds: number[]): Promise<Map<number, QuotaDecision>> {
+/**
+ * CHARGED bytes per rule since `sinceIso` for a fixed set of rules — the
+ * per-rule breakdown of userUsageBytes, one GROUP BY query per ≤90 rules
+ * (D1's 100 bound-parameter cap).
+ */
+async function ruleUsageByRule(db: Database, ruleIds: number[], sinceIso: string): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  if (ruleIds.length === 0) return out;
+  const since = hourFloorIso(sinceIso);
+  const used = sql<number>`COALESCE(SUM(${trafficHourly.billed_upload} + ${trafficHourly.billed_download}), 0)`;
+  for (let i = 0; i < ruleIds.length; i += 90) {
+    const rows = await db
+      .select({ rule_id: trafficHourly.rule_id, used })
+      .from(trafficHourly)
+      .where(and(gte(trafficHourly.hour_ts, since), inArray(trafficHourly.rule_id, ruleIds.slice(i, i + 90))))
+      .groupBy(trafficHourly.rule_id);
+    for (const row of rows) out.set(row.rule_id, Number(row.used));
+  }
+  return out;
+}
+
+/**
+ * Users + subscriptions, then one PARALLEL allowance pass — each decision is
+ * an independent single aggregate; the sequential per-user loop this replaces
+ * stacked every user's roundtrips onto admin lists and node recomputes.
+ */
+async function resolveQuotaDecisions(db: Database, userIds: number[]): Promise<Map<number, QuotaDecision>> {
   const out = new Map<number, QuotaDecision>();
   if (userIds.length === 0) return out;
   const [userById, subByUser] = await Promise.all([getUserStatuses(db, userIds), getActiveSubscriptions(db, userIds)]);
-  for (const id of userIds) {
-    out.set(id, await quotaForUser(db, userById.get(id), subByUser.get(id)));
-  }
+  const decisions = await Promise.all(
+    userIds.map(async (id) => [id, await quotaForUser(db, userById.get(id), subByUser.get(id))] as const),
+  );
+  for (const [id, decision] of decisions) out.set(id, decision);
   return out;
+}
+
+/** Resolve allowance decisions for a set of users in one batch (admin lists). */
+export async function quotaDecisionsForUsers(db: Database, userIds: number[]): Promise<Map<number, QuotaDecision>> {
+  return resolveQuotaDecisions(db, userIds);
 }
 
 /**
@@ -114,11 +149,7 @@ async function quotaForUser(
   if (sub.expired) return { stopped: true, reason: "expired" };
   if (sub.pkg.traffic_bytes <= 0) return { stopped: false }; // unlimited traffic: nothing to enforce
 
-  let used = 0;
-  const owned = await db.select({ id: relayRules.id }).from(relayRules).where(eq(relayRules.user_id, user.id));
-  for (const { id } of owned) {
-    used += await ruleUsageBytes(db, id, sub.subscription.activated_at);
-  }
+  const used = await userUsageBytes(db, user.id, sub.subscription.activated_at);
   const remaining = sub.pkg.traffic_bytes - used;
   if (remaining <= 0) return { stopped: true, reason: "exhausted" };
 
@@ -141,13 +172,7 @@ async function quotaForUser(
  */
 export async function applyRuleQuotas(db: Database, rules: RelayRule[]): Promise<RelayRule[]> {
   const userIds = [...new Set(rules.map((r) => r.user_id).filter((id): id is number => id !== undefined))];
-  if (userIds.length === 0) return rules;
-
-  const [userById, subByUser] = await Promise.all([getUserStatuses(db, userIds), getActiveSubscriptions(db, userIds)]);
-  const decisionByUser = new Map<number, QuotaDecision>();
-  for (const id of userIds) {
-    decisionByUser.set(id, await quotaForUser(db, userById.get(id), subByUser.get(id)));
-  }
+  const decisionByUser = await resolveQuotaDecisions(db, userIds);
 
   const out: RelayRule[] = [];
   for (const rule of rules) {
@@ -170,14 +195,18 @@ export async function userQuotaSummary(
 ): Promise<{ subscription: ActiveSubscription | null; decision: QuotaDecision; rules: RuleQuotaStatus[] }> {
   const sub = (await getActiveSubscriptions(db, [user.id])).get(user.id) ?? null;
   const decision = await quotaForUser(db, user, sub ?? undefined);
-  const statuses: RuleQuotaStatus[] = [];
-  for (const rule of rules) {
-    statuses.push({
-      rule_id: rule.id,
-      rule_name: rule.name,
-      used_bytes:
-        sub && sub.pkg.traffic_bytes > 0 ? await ruleUsageBytes(db, rule.id, sub.subscription.activated_at) : 0,
-    });
-  }
+  const usedByRule =
+    sub && sub.pkg.traffic_bytes > 0
+      ? await ruleUsageByRule(
+          db,
+          rules.map((r) => r.id),
+          sub.subscription.activated_at,
+        )
+      : new Map<number, number>();
+  const statuses: RuleQuotaStatus[] = rules.map((rule) => ({
+    rule_id: rule.id,
+    rule_name: rule.name,
+    used_bytes: usedByRule.get(rule.id) ?? 0,
+  }));
   return { subscription: sub, decision, rules: statuses };
 }

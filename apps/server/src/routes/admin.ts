@@ -36,7 +36,7 @@ import {
   updateUserSchema,
 } from "@tyz/shared";
 import { and, count, desc, eq, gte, ne } from "drizzle-orm";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { createDb, type Database } from "../db";
 import { nodeEntityColumns, recomputeNodeConfig, toRelayNode, toRelayRule, toTunnel } from "../db/repo";
 import {
@@ -168,6 +168,19 @@ async function recomputeTunnelNodes(env: Bindings, tunnelId: number): Promise<vo
   if (changed.length > 0) {
     await notifyConfigChanged(env, changed);
   }
+}
+
+/**
+ * Schedule the post-write recompute+push AFTER the response is sent: an admin
+ * write's latency is its row write + audit, and agent convergence is async
+ * anyway (WS push → agent fetch → apply). waitUntil keeps the isolate alive
+ * while the recompute finishes; failures are logged, not surfaced to the
+ * operator — the daily cron's full recompute self-heals them, exactly like a
+ * failed awaited recompute already did. The one exception is the explicit
+ * POST /nodes/:id/recompute, which stays synchronous on purpose.
+ */
+function deferRecompute(c: Context<{ Bindings: Bindings; Variables: Variables }>, work: () => Promise<unknown>): void {
+  c.executionCtx.waitUntil(work().catch((err) => console.error("deferred recompute failed", err)));
 }
 
 /** Recompute every node serving one user's rules (ownership/quota changes). */
@@ -338,7 +351,7 @@ adminRoutes.post("/nodes", async (c) => {
     targetId: inserted.id,
     detail: input.name,
   });
-  await recomputeAndNotify(c.env, inserted.id);
+  deferRecompute(c, () => recomputeAndNotify(c.env, inserted.id));
   const node = await nodeWithMeta(createDb(c.env.DB), inserted.id);
   return c.json({ node, token }, 201);
 });
@@ -385,7 +398,7 @@ adminRoutes.put("/nodes/:id", async (c) => {
     detail: input.name ?? "",
   });
 
-  await recomputeAndNotify(c.env, id);
+  deferRecompute(c, () => recomputeAndNotify(c.env, id));
   const node = await nodeWithMeta(createDb(c.env.DB), id);
   if (!node) return c.json({ error: "node not found" }, 404);
   return c.json({ node });
@@ -403,9 +416,11 @@ adminRoutes.delete("/nodes/:id", async (c) => {
   if (deleted.length === 0) {
     return c.json({ error: "node not found" }, 404);
   }
-  for (const { tunnel_id } of tunnelRows) {
-    await recomputeTunnelNodes(c.env, tunnel_id);
-  }
+  deferRecompute(c, async () => {
+    for (const { tunnel_id } of tunnelRows) {
+      await recomputeTunnelNodes(c.env, tunnel_id);
+    }
+  });
   await recordAudit(c.env, { actor: c.get("adminName"), action: "node.delete", targetType: "node", targetId: id });
   return c.json({ ok: true });
 });
@@ -570,7 +585,7 @@ adminRoutes.put("/tunnels/:id", async (c) => {
   if (updated.length === 0) {
     return c.json({ error: "tunnel not found" }, 404);
   }
-  await recomputeTunnelNodes(c.env, id);
+  deferRecompute(c, () => recomputeTunnelNodes(c.env, id));
   const db = createDb(c.env.DB);
   const [tunnel] = await db.select().from(tunnels).where(eq(tunnels.id, id));
   const chainCount = (await db.select({ n: count() }).from(chains).where(eq(chains.tunnel_id, id)))[0]?.n ?? 0;
@@ -587,9 +602,11 @@ adminRoutes.delete("/tunnels/:id", async (c) => {
     return c.json({ error: "tunnel not found" }, 404);
   }
   // Chains cascade-deleted; the remaining nodes' snapshots must drop them.
-  for (const { node_id } of nodeRows) {
-    await recomputeAndNotify(c.env, node_id);
-  }
+  deferRecompute(c, async () => {
+    for (const { node_id } of nodeRows) {
+      await recomputeAndNotify(c.env, node_id);
+    }
+  });
   return c.json({ ok: true });
 });
 
@@ -644,7 +661,7 @@ adminRoutes.post("/chains", async (c) => {
       updated_at: ts,
     })
     .returning();
-  await recomputeTunnelNodes(c.env, input.tunnel_id);
+  deferRecompute(c, () => recomputeTunnelNodes(c.env, input.tunnel_id));
   return c.json({ chain }, 201);
 });
 
@@ -698,10 +715,12 @@ adminRoutes.put("/chains/:id", async (c) => {
     return c.json({ error: "chain not found" }, 404);
   }
 
-  await recomputeTunnelNodes(c.env, existing.tunnel_id);
-  if (input.tunnel_id !== undefined && input.tunnel_id !== existing.tunnel_id) {
-    await recomputeTunnelNodes(c.env, input.tunnel_id);
-  }
+  deferRecompute(c, async () => {
+    await recomputeTunnelNodes(c.env, existing.tunnel_id);
+    if (input.tunnel_id !== undefined && input.tunnel_id !== existing.tunnel_id) {
+      await recomputeTunnelNodes(c.env, input.tunnel_id);
+    }
+  });
   const [chain] = await db.select().from(chains).where(eq(chains.id, id));
   return c.json({ chain: chain ?? null });
 });
@@ -724,7 +743,7 @@ adminRoutes.delete("/chains/:id", async (c) => {
     }
   }
   await db.delete(chains).where(eq(chains.id, id)).run();
-  await recomputeTunnelNodes(c.env, existing.tunnel_id);
+  deferRecompute(c, () => recomputeTunnelNodes(c.env, existing.tunnel_id));
   return c.json({ ok: true });
 });
 
@@ -862,7 +881,7 @@ adminRoutes.post("/rules", async (c) => {
       updated_at: ts,
     })
     .returning();
-  await recomputeTunnelNodes(c.env, input.tunnel_id);
+  deferRecompute(c, () => recomputeTunnelNodes(c.env, input.tunnel_id));
   await recordAudit(c.env, {
     actor: c.get("adminName"),
     action: "rule.create",
@@ -933,9 +952,11 @@ adminRoutes.put("/rules/:id", async (c) => {
   const affected = new Set<number>();
   if (existing.tunnel_id) affected.add(existing.tunnel_id);
   if (input.tunnel_id) affected.add(input.tunnel_id);
-  for (const tunnelId of affected) {
-    await recomputeTunnelNodes(c.env, tunnelId);
-  }
+  deferRecompute(c, async () => {
+    for (const tunnelId of affected) {
+      await recomputeTunnelNodes(c.env, tunnelId);
+    }
+  });
   await recordAudit(c.env, {
     actor: c.get("adminName"),
     action: "rule.update",
@@ -961,7 +982,8 @@ adminRoutes.delete("/rules/:id", async (c) => {
   }
   await db.delete(relayRules).where(eq(relayRules.id, id)).run();
   if (existing.tunnel_id) {
-    await recomputeTunnelNodes(c.env, existing.tunnel_id);
+    const tunnelId = existing.tunnel_id;
+    deferRecompute(c, () => recomputeTunnelNodes(c.env, tunnelId));
   }
   await recordAudit(c.env, { actor: c.get("adminName"), action: "rule.delete", targetType: "rule", targetId: id });
   return c.json({ ok: true });
@@ -1123,9 +1145,11 @@ adminRoutes.put("/endpoints/:id", async (c) => {
       .where(eq(relayRules.endpoint_id, id))
       .returning({ tunnel_id: relayRules.tunnel_id });
     const tunnelIds = new Set(rules.map((r) => r.tunnel_id).filter((t): t is number => t !== null));
-    for (const tunnelId of tunnelIds) {
-      await recomputeTunnelNodes(c.env, tunnelId);
-    }
+    deferRecompute(c, async () => {
+      for (const tunnelId of tunnelIds) {
+        await recomputeTunnelNodes(c.env, tunnelId);
+      }
+    });
   }
   await recordAudit(c.env, {
     actor: c.get("adminName"),
@@ -1269,7 +1293,7 @@ adminRoutes.put("/users/:id", async (c) => {
   }
   if (input.status !== undefined) {
     // Disabling/reactivating changes whether the user's rules are served.
-    await recomputeUserNodes(c.env, id);
+    deferRecompute(c, () => recomputeUserNodes(c.env, id));
   }
   await recordAudit(c.env, {
     actor: c.get("adminName"),
@@ -1298,11 +1322,13 @@ adminRoutes.delete("/users/:id", async (c) => {
   if (deleted.length === 0) {
     return c.json({ error: "user not found" }, 404);
   }
-  for (const { tunnel_id } of tunnelsOf) {
-    if (tunnel_id !== null) {
-      await recomputeTunnelNodes(c.env, tunnel_id);
+  deferRecompute(c, async () => {
+    for (const { tunnel_id } of tunnelsOf) {
+      if (tunnel_id !== null) {
+        await recomputeTunnelNodes(c.env, tunnel_id);
+      }
     }
-  }
+  });
   await recordAudit(c.env, { actor: c.get("adminName"), action: "user.delete", targetType: "user", targetId: id });
   return c.json({ ok: true });
 });
@@ -1355,7 +1381,7 @@ adminRoutes.post("/users/:id/subscribe", async (c) => {
     })
     .returning();
 
-  await recomputeUserNodes(c.env, userId);
+  deferRecompute(c, () => recomputeUserNodes(c.env, userId));
   await recordAudit(c.env, {
     actor: c.get("adminName"),
     action: "subscribe",
@@ -1398,7 +1424,7 @@ adminRoutes.put("/settings/tls-domain", async (c) => {
     detail: changed ? `${previous ?? "(unset)"} -> ${parsed.data.domain}` : `unchanged (${parsed.data.domain})`,
   });
   if (changed) {
-    await recomputeTlsNodes(c.env);
+    deferRecompute(c, () => recomputeTlsNodes(c.env));
   }
   return c.json({ ok: true, domain: parsed.data.domain, changed, issued });
 });
@@ -1428,7 +1454,7 @@ leafDays=${result.profile.leaf_validity_days} caDays=${result.profile.ca_validit
     // "issued" means material just appeared — recompute is usually a no-op (no
     // TLS tunnel can be serving before material existed) but stays cheap and
     // covers a hand-wiped tls_material while a tunnel was already enabled.
-    await recomputeTlsNodes(c.env);
+    deferRecompute(c, () => recomputeTlsNodes(c.env));
   }
   return c.json({ ok: true, ...result });
 });
@@ -1518,9 +1544,11 @@ adminRoutes.put("/packages/:id", async (c) => {
     .selectDistinct({ user_id: userPackages.user_id })
     .from(userPackages)
     .where(eq(userPackages.package_id, id));
-  for (const { user_id } of subs) {
-    await recomputeUserNodes(c.env, user_id);
-  }
+  deferRecompute(c, async () => {
+    for (const { user_id } of subs) {
+      await recomputeUserNodes(c.env, user_id);
+    }
+  });
   await recordAudit(c.env, {
     actor: c.get("adminName"),
     action: "package.update",
