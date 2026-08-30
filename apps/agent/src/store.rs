@@ -1,14 +1,19 @@
 //! Offline bootstrap cache: the last successfully applied config response,
 //! persisted atomically and replayed at startup so an unchanged config after
-//! a control-plane outage costs one 304. Unreadable/stale caches are skipped
-//! with a warning (a legacy Go-era cache is exactly that).
+//! a control-plane outage costs one 304. Unreadable caches are skipped with
+//! a warning.
+//!
+//! Format is TOML (same data model as the wire payload — full-fidelity serde
+//! round-trip, so the file doubles as a human-readable dump of the applied
+//! config). Not realm's `[[endpoints]]` dialect: service names (billing and
+//! status keys), LB target lists and TLS legs must round-trip losslessly.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::model::AgentConfigResponse;
 
-pub const CACHE_FILE: &str = "last-config.json";
+pub const CACHE_FILE: &str = "last-config.toml";
 
 fn cache_path() -> PathBuf {
     PathBuf::from(CACHE_FILE)
@@ -16,20 +21,20 @@ fn cache_path() -> PathBuf {
 
 /// Path-injected variants (tests run in parallel temp dirs).
 pub fn save_at(path: &Path, resp: &AgentConfigResponse) {
-    if let Err(err) = atomic_write(path, &serde_json::to_vec_pretty(resp).expect("serialize"), 0o600) {
+    if let Err(err) = atomic_write(path, toml::to_string_pretty(resp).expect("serialize").as_bytes(), 0o600) {
         panic!("test helper write failed: {err}");
     }
 }
 
 pub fn load_at(path: &Path) -> Option<AgentConfigResponse> {
-    let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    let text = std::fs::read_to_string(path).ok()?;
+    toml::from_str(&text).ok()
 }
 
 /// Write via tmp + fsync + rename: power loss must never leave a truncated
 /// cache (the same discipline as the Go agent).
 fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
+    let tmp = path.with_extension("toml.tmp");
     {
         use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
@@ -43,28 +48,28 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
 
 /// Persist a config response (0600 — tls_material PEMs ride inside).
 pub fn save(resp: &AgentConfigResponse) {
-    let bytes = match serde_json::to_vec_pretty(resp) {
-        Ok(b) => b,
+    let text = match toml::to_string_pretty(resp) {
+        Ok(t) => t,
         Err(err) => {
             tracing::warn!("cache serialize failed: {err}");
             return;
         }
     };
-    if let Err(err) = atomic_write(&cache_path(), &bytes, 0o600) {
+    if let Err(err) = atomic_write(&cache_path(), text.as_bytes(), 0o600) {
         tracing::warn!("cache write failed: {err}");
     }
 }
 
 /// Load the cached response. Any error → None + warning (start from scratch).
 pub fn load() -> Option<AgentConfigResponse> {
-    let bytes = match std::fs::read(cache_path()) {
-        Ok(b) => b,
+    let text = match std::fs::read_to_string(cache_path()) {
+        Ok(t) => t,
         Err(err) => {
             tracing::info!("no offline cache ({err}); starting with a full refresh");
             None?
         }
     };
-    match serde_json::from_slice(&bytes) {
+    match toml::from_str(&text) {
         Ok(resp) => Some(resp),
         Err(err) => {
             tracing::warn!("offline cache unreadable ({err}); skipping replay");
@@ -82,7 +87,6 @@ mod tests {
         AgentConfigResponse {
             version,
             config: RealmNodeConfig {
-                agent: "realm".into(),
                 node: NodeInfo { id: 7, name: "n7".into() },
                 services: vec![],
                 tls_material: None,
@@ -99,8 +103,9 @@ mod tests {
         let loaded = load_at(&cache).unwrap();
         assert_eq!(loaded.version, 42);
         assert_eq!(loaded.config.node.id, 7);
-        // round-trip through the CWD-relative API as well
-        assert!(serde_json::from_slice::<AgentConfigResponse>(&std::fs::read(&cache).unwrap()).is_ok());
+        // human-inspectable: valid TOML with the version on top
+        let text = std::fs::read_to_string(&cache).unwrap();
+        assert!(text.starts_with("version = 42"), "unexpected dump: {text}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

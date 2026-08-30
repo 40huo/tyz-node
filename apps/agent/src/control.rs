@@ -61,16 +61,6 @@ impl Control {
             }
         };
 
-        // Flavor guard: a non-realm payload must never be applied (the
-        // mirror image of the old Go agent's cutover hazard).
-        if resp.config.agent != "realm" {
-            tracing::error!(
-                flavor = resp.config.agent,
-                "refusing non-realm config payload; keeping current services"
-            );
-            return PollOutcome::Unchanged;
-        }
-
         // PEMs must land on disk BEFORE services build TLS configs from them
         // (kaminari resolves the paths at acceptor construction).
         let tls_changed = match &resp.config.tls_material {

@@ -322,7 +322,6 @@ export interface RealmService {
 
 /** Config payload consumed by the Rust realm agent (GET /api/agent/config). */
 export interface RealmNodeConfig {
-  agent: "realm";
   node: { id: number; name: string };
   services: RealmService[];
   /** Present iff any service carries tls_side (same set for both legs). */

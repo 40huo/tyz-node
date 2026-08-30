@@ -126,7 +126,6 @@ describe("buildRealmNodeConfig", () => {
     });
 
     const config = await buildRealmNodeConfig(db, 1);
-    expect(config?.agent).toBe("realm");
     const svc = serviceOf(config!, "service-100");
     expect(svc).toMatchObject({
       listen_host: "0.0.0.0",
@@ -346,7 +345,6 @@ describe("quotaSweepStoppedUsers (flush-driven hard-stop sweep)", () => {
 
   async function snapshotWith(db: AppDb, nodeId: number, ruleIds: number[]): Promise<void> {
     const config = {
-      agent: "realm",
       node: { id: nodeId, name: `n${nodeId}` },
       services: ruleIds.map((id) => ({
         name: `service-${id}`,

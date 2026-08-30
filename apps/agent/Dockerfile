@@ -52,7 +52,7 @@ FROM alpine:3.22
 RUN apk add --no-cache ca-certificates
 
 # /var/lib/tyz holds .env, certs/ (platform link-TLS PEMs) and the
-# last-config.json offline bootstrap cache — mount a directory or volume on
+# last-config.toml offline bootstrap cache — mount a directory or volume on
 # it to keep tunnels alive across restarts. Runs as root: the agent needs
 # host networking anyway, and operator-created bind mounts (the documented
 # ./data layout) are root-owned, which would block a non-root container from

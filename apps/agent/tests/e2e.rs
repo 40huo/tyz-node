@@ -48,7 +48,6 @@ fn service(name: &str, listen: u16, host: &str, port: u16) -> RealmService {
 
 fn config(node_id: i64, services: Vec<RealmService>) -> RealmNodeConfig {
     RealmNodeConfig {
-        agent: "realm".into(),
         node: NodeInfo { id: node_id, name: format!("node-{node_id}") },
         services,
         tls_material: None,

@@ -86,7 +86,6 @@ export const realmServiceSchema = z.object({
 });
 
 export const realmNodeConfigSchema = z.object({
-  agent: z.literal("realm"),
   node: z.object({ id: z.number().int(), name: z.string() }),
   services: z.array(realmServiceSchema),
   tls_material: tlsMaterialSchema.optional(),

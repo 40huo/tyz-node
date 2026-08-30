@@ -86,5 +86,5 @@ docker compose up -d   # 单容器 tyz-app（镜像 ghcr.io/laoshan-tech/tyz-nod
 ## 说明
 
 - 配置下发优先走 WebSocket 长连接（`GET /api/agent/ws`）：管理端写操作实时推送 `config_changed`，agent 立即拉取（304/200 去重）；WS 在 60 秒内断连 3 次自动降级为 HTTP 轮询（默认 10s，`POLL_INTERVAL_MS` 可调），降级期间每 60 秒探测重连（`WS_PROBE_INTERVAL_MS` 可调），成功后自动切回推送模式；`WS_ENABLED=false` 可强制纯轮询。统计默认 60s 批量上报（`STATS_FLUSH_INTERVAL_MS`）。
-- agent 进程内做服务级 diff 热更新（监听端口对直转，配置变更不断存量连接；TLS 轮换与手动重启除外；accept 循环意外退出的服务会在下次应用时自动重建），最近一次应用的配置持久化在 `last-config.json`（容器内 `/var/lib/tyz`，随卷保存），控制面不可达时重启 agent 也能先按缓存恢复隧道，恢复后无变化仅一次 304 对齐。
+- agent 进程内做服务级 diff 热更新（监听端口对直转，配置变更不断存量连接；TLS 轮换与手动重启除外；accept 循环意外退出的服务会在下次应用时自动重建），最近一次应用的配置持久化在 `last-config.toml`（TOML 格式，方便直接查看；容器内 `/var/lib/tyz`，随卷保存），控制面不可达时重启 agent 也能先按缓存恢复隧道，恢复后无变化仅一次 304 对齐。
 - 历史统计保留 30 天，由 Worker Cron 每日清理。

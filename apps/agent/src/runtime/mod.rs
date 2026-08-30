@@ -300,7 +300,6 @@ mod tests {
 
     fn config(port: u16, target: u16) -> RealmNodeConfig {
         RealmNodeConfig {
-            agent: "realm".into(),
             node: NodeInfo { id: 1, name: "n".into() },
             services: vec![RealmService {
                 name: "service-1".into(),

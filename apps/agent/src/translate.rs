@@ -11,8 +11,6 @@ use crate::model::{BalanceStrategy, RealmNodeConfig, RealmService, TlsMaterial, 
 
 #[derive(Debug, thiserror::Error)]
 pub enum TranslateError {
-    #[error("unexpected config flavor {flavor:?} (expected \"realm\") — refusing to apply")]
-    WrongFlavor { flavor: String },
     #[error("service {name:?}: invalid listen address {host}:{port}")]
     BadListen { name: String, host: String, port: u16 },
     #[error("service {name:?}: empty target host")]
@@ -54,12 +52,6 @@ impl std::fmt::Display for TargetAddr {
 /// Translate + validate. Services come back sorted by name so snapshots and
 /// diffs are deterministic.
 pub fn translate(config: &RealmNodeConfig) -> Result<Vec<DesiredService>, TranslateError> {
-    if config.agent != "realm" {
-        return Err(TranslateError::WrongFlavor {
-            flavor: config.agent.clone(),
-        });
-    }
-
     let material: Option<&TlsMaterial> = config.tls_material.as_ref();
     let mut out = Vec::with_capacity(config.services.len());
     for svc in &config.services {
@@ -139,7 +131,6 @@ mod tests {
 
     fn config(services: Vec<RealmService>, material: bool) -> RealmNodeConfig {
         RealmNodeConfig {
-            agent: "realm".into(),
             node: NodeInfo { id: 1, name: "n".into() },
             services,
             tls_material: material.then(|| TlsMaterial {
@@ -151,13 +142,6 @@ mod tests {
                 client_key: "ck".into(),
             }),
         }
-    }
-
-    #[test]
-    fn refuses_wrong_flavor() {
-        let mut cfg = config(vec![], false);
-        cfg.agent = "gost".into();
-        assert!(matches!(translate(&cfg), Err(TranslateError::WrongFlavor { .. })));
     }
 
     #[test]

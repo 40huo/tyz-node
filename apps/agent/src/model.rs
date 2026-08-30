@@ -14,9 +14,6 @@ pub struct AgentConfigResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RealmNodeConfig {
-    /// Flavor discriminator; anything other than "realm" is refused by the
-    /// control loop (a stale gost payload must never be applied).
-    pub agent: String,
     pub node: NodeInfo,
     #[serde(default)]
     pub services: Vec<RealmService>,
