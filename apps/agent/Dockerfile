@@ -36,7 +36,12 @@ RUN . /env.sh && mkdir -p apps/agent/src && \
     cd apps/agent && cargo zigbuild --release --locked --lib --target "$TARGET" || true
 
 COPY apps/agent ./apps/agent
-RUN . /env.sh && cd apps/agent && \
+# Docker COPY keeps the context's (old) source mtimes — OLDER than the
+# warm-up layer's build time. Cargo fingerprints are mtime-based, so without
+# this bump it considers the placeholder lib fresh and the bin links against
+# an empty `tyz_agent` (E0433/E0425 on agentcfg/VERSION/run).
+RUN . /env.sh && find apps/agent/src -type f -exec touch {} + && \
+    cd apps/agent && \
     cargo zigbuild --release --locked --target "$TARGET" && \
     cp "target/$TARGET/release/tyz-agent" /out-tyz-agent
 
