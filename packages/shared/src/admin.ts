@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   type Endpoint,
-  ForwardMode,
   type Package,
   type RelayNode,
   type RelayRule,
@@ -15,7 +14,6 @@ import {
 import type { GostStatsSample } from "./schemas";
 import {
   chainTypeSchema,
-  forwardModeSchema,
   limiterConfigSchema,
   relayRuleStatusSchema,
   transportSchema,

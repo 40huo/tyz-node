@@ -3,9 +3,12 @@
 //! previous one serving (and the version is not adopted).
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use realm_lb::{Balancer, Strategy};
+
+use crate::ratelimit::RateLimiter;
 
 use crate::model::{BalanceStrategy, RealmNodeConfig, RealmService, TlsMaterial, TlsSide};
 
@@ -31,6 +34,32 @@ pub struct DesiredService {
     pub balancer: Option<Balancer>,
     pub tls: Option<TlsSide>,
     pub connect_timeout: Duration,
+    /// Rate/connection limits (None when the payload carried no enforceable
+    /// limit at all).
+    pub limit: Option<Arc<ServiceLimiters>>,
+}
+
+/// The runtime enforcement set built from the payload's `limit` object.
+#[derive(Debug, Default)]
+pub struct ServiceLimiters {
+    /// Rejected at accept when the live connection count reaches the cap.
+    pub max_conns: Option<usize>,
+    /// Service-level buckets, shared by every connection of the service.
+    pub service_in: Option<Arc<RateLimiter>>,
+    pub service_out: Option<Arc<RateLimiter>>,
+    /// Per-connection rates (a fresh bucket per accepted connection).
+    pub conn_in: Option<u64>,
+    pub conn_out: Option<u64>,
+}
+
+impl ServiceLimiters {
+    fn is_empty(&self) -> bool {
+        self.max_conns.is_none()
+            && self.service_in.is_none()
+            && self.service_out.is_none()
+            && self.conn_in.is_none()
+            && self.conn_out.is_none()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +124,17 @@ pub fn translate(config: &RealmNodeConfig) -> Result<Vec<DesiredService>, Transl
             _ => None,
         };
 
+        let limit = svc.limit.as_ref().and_then(|l| {
+            let limiters = ServiceLimiters {
+                max_conns: l.max_conns.map(|n| n as usize),
+                service_in: l.service_in.map(RateLimiter::new),
+                service_out: l.service_out.map(RateLimiter::new),
+                conn_in: l.conn_in,
+                conn_out: l.conn_out,
+            };
+            if limiters.is_empty() { None } else { Some(Arc::new(limiters)) }
+        });
+
         out.push(DesiredService {
             raw: svc.clone(),
             listen,
@@ -102,6 +142,7 @@ pub fn translate(config: &RealmNodeConfig) -> Result<Vec<DesiredService>, Transl
             balancer,
             tls: svc.tls_side,
             connect_timeout: Duration::from_secs(svc.connect_timeout_s.unwrap_or(5)),
+            limit,
         });
     }
 
@@ -126,6 +167,7 @@ mod tests {
             tls_side: None,
             alpn: vec![],
             connect_timeout_s: None,
+            limit: None,
         }
     }
 
@@ -152,6 +194,27 @@ mod tests {
             translate(&config(vec![svc], false)),
             Err(TranslateError::TlsWithoutMaterial { .. })
         ));
+    }
+
+    #[test]
+    fn limit_is_built_into_desired_services() {
+        let mut svc = base_service("service-1");
+        svc.limit = Some(crate::model::ServiceLimit {
+            service_in: Some(1_000_000),
+            max_conns: Some(3),
+            ..Default::default()
+        });
+        let out = translate(&config(vec![svc], false)).unwrap();
+        let limit = out[0].limit.as_ref().unwrap();
+        assert_eq!(limit.max_conns, Some(3));
+        assert_eq!(limit.service_in.as_ref().unwrap().rate(), 1_000_000);
+        assert!(limit.service_out.is_none() && limit.conn_in.is_none() && limit.conn_out.is_none());
+
+        // an empty limit object carries nothing enforceable → None
+        let mut empty = base_service("service-2");
+        empty.limit = Some(Default::default());
+        let out = translate(&config(vec![empty], false)).unwrap();
+        assert!(out[0].limit.is_none());
     }
 
     #[test]

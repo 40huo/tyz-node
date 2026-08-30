@@ -261,7 +261,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use crate::model::{NodeInfo, RealmNodeConfig, RealmService};
+    use crate::model::{NodeInfo, RealmNodeConfig, RealmService, ServiceLimit};
     use crate::stats::StatsRegistry;
 
     /// Echo server on an ephemeral port; returns the port.
@@ -312,6 +312,7 @@ mod tests {
                 tls_side: None,
                 alpn: vec![],
                 connect_timeout_s: None,
+                limit: None,
             }],
             tls_material: None,
         }
@@ -346,6 +347,35 @@ mod tests {
 
         let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         roundtrip(&mut client, b"still-serving").await;
+    }
+
+    #[tokio::test]
+    async fn connection_cap_rejects_excess() {
+        use tokio::io::AsyncReadExt;
+
+        let target = echo_server().await;
+        let port = free_port().await;
+        let mut cfg = config(port, target);
+        cfg.services[0].limit = Some(ServiceLimit { max_conns: Some(1), ..Default::default() });
+        let mut sv = Supervisor::new(StatsRegistry::new());
+
+        let first = sv.apply_config(&cfg, false).await.unwrap();
+        assert!(first.ok());
+
+        let mut client1 = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        roundtrip(&mut client1, b"one").await;
+
+        // The second connection is accepted at TCP level, then closed at once.
+        let mut client2 = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut buf = [0u8; 4];
+        let n = tokio::time::timeout(Duration::from_secs(2), client2.read(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(n, 0, "rejected connection must be closed immediately");
+
+        // The cap stays enforced and the established connection is untouched.
+        roundtrip(&mut client1, b"still-here").await;
     }
 
     #[tokio::test]

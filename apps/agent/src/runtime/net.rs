@@ -14,6 +14,7 @@ use kaminari::{AsyncAccept, AsyncConnect};
 use realm_lb::{BalanceCtx, Token};
 use tokio::net::TcpStream;
 
+use crate::ratelimit::{Pacer, Paced, RateLimiter};
 use crate::runtime::zero;
 use crate::stats::{ConnGuard, Counters, TxCounter};
 use crate::translate::{DesiredService, TargetAddr};
@@ -47,6 +48,8 @@ pub async fn handle_conn(client: ClientConn, peer_ip: IpAddr, ctx: Arc<ConnConte
     let counters = guard.counters();
     let timeout = ctx.service.connect_timeout;
 
+    // Per-direction rate pacers (empty = unlimited).
+    let (in_pacer, out_pacer) = pacers_for(&ctx);
     // LB pick: Token(0) = primary target, Token(i) = targets[i].
     let target_idx = match &ctx.service.balancer {
         Some(balancer) => match balancer.next(BalanceCtx { src_ip: &peer_ip }) {
@@ -57,7 +60,7 @@ pub async fn handle_conn(client: ClientConn, peer_ip: IpAddr, ctx: Arc<ConnConte
     };
     let target: &TargetAddr = &ctx.service.targets[target_idx];
 
-    let result = dial_and_forward(client, target, &ctx, timeout, counters).await;
+    let result = dial_and_forward(client, target, &ctx, timeout, counters, in_pacer, out_pacer).await;
     if let Err(err) = result {
         tracing::debug!(service = name, target = %target, "connection failed: {err}");
         for c in counters {
@@ -85,12 +88,27 @@ async fn dial(
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connect timeout"))?
 }
 
+/// Per-direction pacers for one connection: the service-level buckets plus a
+/// fresh per-connection bucket when conn rates are configured.
+fn pacers_for(ctx: &ConnContext) -> (Pacer, Pacer) {
+    let Some(limit) = &ctx.service.limit else {
+        return (Pacer::default(), Pacer::default());
+    };
+    let conn_in = limit.conn_in.map(RateLimiter::new);
+    let conn_out = limit.conn_out.map(RateLimiter::new);
+    let in_pacer = Pacer::new(limit.service_in.iter().cloned().chain(conn_in).collect());
+    let out_pacer = Pacer::new(limit.service_out.iter().cloned().chain(conn_out).collect());
+    (in_pacer, out_pacer)
+}
+
 async fn dial_and_forward(
     client: ClientConn,
     target: &TargetAddr,
     ctx: &ConnContext,
     timeout: Duration,
     counters: [&Arc<Counters>; 2],
+    in_pacer: Pacer,
+    out_pacer: Pacer,
 ) -> io::Result<()> {
     let up = counters[0].input_handle();
     let down = counters[0].output_handle();
@@ -100,7 +118,7 @@ async fn dial_and_forward(
         // without TLS, single-node direct): the splice zero-copy path.
         ClientConn::Plain(client) if ctx.service.tls.is_none() => {
             let sock = dial(target, timeout).await?;
-            let (a2b, b2a) = zero::bidi_copy_counted(client, sock, up, down).await?;
+            let (a2b, b2a) = zero::bidi_copy_counted(client, sock, up, down, in_pacer, out_pacer).await?;
             sync_client_level(counters, a2b, b2a);
             Ok(())
         }
@@ -114,14 +132,14 @@ async fn dial_and_forward(
             let sock = dial(target, timeout).await?;
             let mut hs = vec![0u8; HANDSHAKE_BUF];
             let tls_stream = connector.connect(sock, &mut hs).await?;
-            let (a2b, b2a) = copy_tls_target(&mut client, tls_stream, up, down).await?;
+            let (a2b, b2a) = copy_tls_target(&mut client, tls_stream, up, down, in_pacer, out_pacer).await?;
             sync_client_level(counters, a2b, b2a);
             Ok(())
         }
         // TLS-terminated client + plain target (exit leg).
         ClientConn::Tls(mut tls_client) => {
             let sock = dial(target, timeout).await?;
-            let (a2b, b2a) = copy_tls_client(&mut tls_client, sock, up, down).await?;
+            let (a2b, b2a) = copy_tls_client(&mut tls_client, sock, up, down, in_pacer, out_pacer).await?;
             sync_client_level(counters, a2b, b2a);
             Ok(())
         }
@@ -141,13 +159,16 @@ async fn bidi_copy_userland<A, B>(
     target: &mut B,
     up: zero::DirectionCounter,
     down: zero::DirectionCounter,
+    in_pacer: Pacer,
+    out_pacer: Pacer,
 ) -> io::Result<(u64, u64)>
 where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut target = StatStream::new(target, TxCounter(up));
-    let mut client = StatStream::new(client, TxCounter(down));
+    // writes INTO target = inbound (service_in); writes INTO client = outbound.
+    let mut target = StatStream::new(Paced::new(target, in_pacer), TxCounter(up));
+    let mut client = StatStream::new(Paced::new(client, out_pacer), TxCounter(down));
     realm_io::bidi_copy(&mut client, &mut target).await
 }
 
@@ -156,12 +177,14 @@ async fn copy_tls_target<S>(
     target: S,
     up: zero::DirectionCounter,
     down: zero::DirectionCounter,
+    in_pacer: Pacer,
+    out_pacer: Pacer,
 ) -> io::Result<(u64, u64)>
 where
     S: IOStream,
 {
     let mut target = target;
-    bidi_copy_userland(client, &mut target, up, down).await
+    bidi_copy_userland(client, &mut target, up, down, in_pacer, out_pacer).await
 }
 
 async fn copy_tls_client<S>(
@@ -169,10 +192,12 @@ async fn copy_tls_client<S>(
     target: TcpStream,
     up: zero::DirectionCounter,
     down: zero::DirectionCounter,
+    in_pacer: Pacer,
+    out_pacer: Pacer,
 ) -> io::Result<(u64, u64)>
 where
     S: IOStream,
 {
     let mut target = target;
-    bidi_copy_userland(client, &mut target, up, down).await
+    bidi_copy_userland(client, &mut target, up, down, in_pacer, out_pacer).await
 }
