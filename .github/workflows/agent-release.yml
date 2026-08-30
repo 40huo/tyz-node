@@ -32,7 +32,9 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+          # libc6-dev-arm64-cross: aarch64 glibc headers + crt objects (ring's
+          # C code cannot compile against host headers without it)
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       # The release tag is stamped into the binary (TYZ_VERSION, src/lib.rs).
       # Assets land on the release as tyz-agent-<tag>-<os>-<arch>.tar.gz +
