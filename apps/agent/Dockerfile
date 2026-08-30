@@ -1,13 +1,13 @@
 # Build context: repository root
 #
 # Multi-stage cross-compile: the builder runs natively on the build host
-# (BUILDPLATFORM) and cross-compiles for TARGETARCH (no QEMU emulation —
-# cargo under emulation takes tens of minutes), so aarch64 builds stay as
-# fast as amd64. The toolchain is pinned by apps/agent/rust-toolchain.toml
-# (nightly — kaminari needs unstable features); rustup auto-installs it on
-# the first cargo call made inside apps/agent.
+# (BUILDPLATFORM); zig provides the musl sysroot for both targets, so the
+# agent is a STATIC binary and the runtime stage can be Alpine (~10MB total
+# instead of ~80MB for a glibc/debian-slim layout). The toolchain is pinned
+# by apps/agent/rust-toolchain.toml (nightly); rustup auto-installs it on the
+# first cargo call made inside apps/agent.
 
-FROM --platform=$BUILDPLATFORM rust:1-bookworm AS build
+FROM --platform=$BUILDPLATFORM ghcr.io/rust-cross/cargo-zigbuild:0.17 AS build
 
 WORKDIR /src
 ARG TARGETARCH
@@ -16,17 +16,14 @@ ARG TARGETARCH
 # "dev" default.
 ARG TYZ_VERSION=dev
 
-# Cross toolchain layer: re-run only when the toolchain pin changes. The
-# rustup calls run INSIDE apps/agent so the pinned toolchain from
-# rust-toolchain.toml is the one that receives the target.
+# Target layer: re-run only when the toolchain pin changes. The rustup call
+# runs INSIDE apps/agent so the pinned toolchain from rust-toolchain.toml is
+# the one that receives the target.
 COPY apps/agent/rust-toolchain.toml ./apps/agent/rust-toolchain.toml
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
-        apt-get update && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu && \
-        { echo 'export TARGET=aarch64-unknown-linux-gnu'; \
-          echo 'export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc'; } > /env.sh; \
+        echo 'export TARGET=aarch64-unknown-linux-musl' > /env.sh; \
     else \
-        { echo 'export TARGET=x86_64-unknown-linux-gnu'; \
-          echo 'export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc'; } > /env.sh; \
+        echo 'export TARGET=x86_64-unknown-linux-musl' > /env.sh; \
     fi && \
     cd apps/agent && rustup target add "$(. /env.sh; echo "$TARGET")"
 
@@ -36,16 +33,18 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
 COPY apps/agent/Cargo.toml apps/agent/Cargo.lock ./apps/agent/
 RUN . /env.sh && mkdir -p apps/agent/src && \
     echo "// dependency warm-up placeholder" > apps/agent/src/lib.rs && \
-    cd apps/agent && cargo build --release --locked --lib --target "$TARGET" || true
+    cd apps/agent && cargo zigbuild --release --locked --lib --target "$TARGET" || true
 
 COPY apps/agent ./apps/agent
 RUN . /env.sh && cd apps/agent && \
-    cargo build --release --locked --target "$TARGET" && \
+    cargo zigbuild --release --locked --target "$TARGET" && \
     cp "target/$TARGET/release/tyz-agent" /out-tyz-agent
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && \
-    rm -rf /var/lib/apt/lists/*
+FROM alpine:3.22
+# CA bundle for in-container debugging tools; the agent itself uses
+# compile-time webpki roots. No tzdata: nothing in the agent formats local
+# time (tracing logs RFC3339 UTC).
+RUN apk add --no-cache ca-certificates
 
 # /var/lib/tyz holds .env, certs/ (platform link-TLS PEMs) and the
 # last-config.json offline bootstrap cache — mount a directory or volume on
