@@ -39,6 +39,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 thiserror = "2"
 rand = "0.8"
 dotenvy = "0.15"
+toml = "1.1.4"
 
 [dev-dependencies]
 hyper = { version = "1", features = ["server", "http1"] }

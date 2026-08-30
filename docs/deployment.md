@@ -303,7 +303,7 @@ services:
     network_mode: host                            # 必须：GOST 直接监听宿主端口
     volumes:
       - ./.env:/var/lib/tyz/.env:ro
-      # 持久化：离线自举缓存 last-config.json、配额计数器 quota-store.json、
+      # 持久化：离线自举缓存 last-config.toml、平台 TLS 证书 certs/、
       # 链路 TLS 证书 certs/、自动生成的默认证书 $HOME/.gost
       - ./data:/var/lib/tyz
 ```
@@ -380,7 +380,7 @@ systemctl daemon-reload && systemctl enable --now tyz-agent
 
 | 文件/目录 | 作用 | 丢失后果 |
 |---|---|---|
-| `last-config.json` | 最近一次应用的配置（离线自举） | 控制面不可达时重启无法恢复隧道；恢复后也从零全量拉取 |
+| `last-config.toml` | 最近一次应用的配置（离线自举，TOML 可直接查看） | 控制面不可达时重启无法恢复隧道；恢复后也从零全量拉取 |
 | `quota-store.json` | GOST 配额计数器（10s 落盘） | 配额计数归零，可能超发已用额度 |
 | `certs/` | 平台签发的链路 TLS 证书/私钥 | 重启后由下次配置下发自动重写，无实际损失（链路会短暂重建） |
 | `$HOME/.gost` | 自动生成的默认 TLS 证书 | 重新生成，自签场景对端需重新信任 |
@@ -417,7 +417,7 @@ docker restart tyz-app                        # 重启（会重建全部 GOST �
 
 更新镜像 tag / 替换二进制后重启。重启语义：
 
-- 启动时先重放 `last-config.json` 恢复全部隧道（控制面不可达也能恢复），再对齐版本（无变化则一次 304）；
+- 启动时先重放 `last-config.toml` 恢复全部隧道（控制面不可达也能恢复），再对齐版本（无变化则一次 304）；
 - GOST 服务全部重建，**该节点存量连接会被断开**（通常会话层自动重连）；
 - 配置热更新（不重启进程的常规变更）不受影响：chains/limiters/quotas 热切换不断连接，只有 service 本身变更才会断该规则的连接。
 

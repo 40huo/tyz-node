@@ -103,7 +103,7 @@ rule status auto-sync: the stats ingest also derives relay_rules.status from the
 - `main.rs` — env config, tracing (`DEBUG=true` → debug logs; `GOST_API_ADDR` is obsolete and warned about), rustls/ring provider install, control loop until SIGTERM/SIGINT (final stats flush + service shutdown). `--version` prints the build-stamped version (`TYZ_VERSION` compile-time env, `dev` when unset; stamped by the release workflow / Docker build-arg).
 - `agentcfg.rs` — env/dotenv loading; variable names mirror the legacy Go agent one-for-one.
 - `model.rs` — wire types mirroring `@tyz/shared` (`RealmNodeConfig`; stats samples with camelCase serde rename; WS push messages).
-- `translate.rs` — `RealmNodeConfig` → desired service set. All validation happens here (flavor guard `agent == "realm"`, address parsing, LB shape, TLS-without-material); a rejected config keeps the previous one serving and the version is not adopted.
+- `translate.rs` — `RealmNodeConfig` → desired service set. All validation happens here (address parsing, LB shape, TLS-without-material); a rejected config keeps the previous one serving and the version is not adopted.
 - `runtime/mod.rs` (`Supervisor`) — registry-diff apply over managed services: `last` records the desired world INCLUDING failures; changed services rebuild (same-port: stop old FIRST — double-bind is EADDRINUSE; different ports: new bind proven BEFORE old stops — zero downtime); a **dead accept loop self-heals on the next apply even with an unchanged config** (gostapply's dead-service rule); pure heals keep live connections, TLS rebuilds drop them; `restart(name)` rebuilds one service from `last` (no re-fetch); `health_snapshot` covers the full desired world (running/failed/apply_failed — the server deletes rows for services absent from it).
 - `runtime/service.rs` — one managed service = one listener + accept loop + connection registry. Bind/constructor failures return errors (→ `apply_failed` health), never panics. Connections are independent tasks; `stop(drop_conns)` optionally aborts them (manual restart / TLS rotation only).
 - `runtime/net.rs` — per-connection forwarding: realm_lb target pick, dial with connect timeout (default 5s), counting bidi copy — splice path for plain/plain legs, `StatStream` userland copy whenever a TLS leg is involved (realm itself goes userland under transport).
@@ -113,7 +113,7 @@ rule status auto-sync: the stats ingest also derives relay_rules.status from the
 - `cp/http.rs` — versioned config fetch (304 handling, 8MB response cap, 30s timeout) and batched stats upload.
 - `cp/ws.rs` — WS push channel state machine (see diagram above).
 - `stats.rs` — cumulative per-(service × client) atomic counters + the flush buffer (merge-by-key keeping the intra-window `current_conns` peak, cap 1000 with drop-oldest, ≤20-sample chunks; service-level rows sort first so the billing rows survive the cap).
-- `store.rs` — offline bootstrap cache `last-config.json` (atomic write, 0600; non-realm payloads skipped with a warning).
+- `store.rs` — offline bootstrap cache `last-config.toml` (atomic write, 0600). TOML serialization of the same wire model — doubles as a human-readable dump of the applied config.
 - `control.rs` — the control loop (poll cadence by channel mode, backoff ×2 max 5min ±20% jitter, restart directives, version adopted only on fully successful apply) and the flush loop (random startup phase; buffer-merge; ≤20-sample chunked upload with remainder-keep retry).
 
 ## Critical Implementation Details
@@ -128,7 +128,7 @@ rule status auto-sync: the stats ingest also derives relay_rules.status from the
 - Tunnels with middle-hop (`chain` type) links are SKIPPED — no hop chaining in the realm data plane; a node holding both ends of a tunnel is skipped too.
 - Quota hard-stopped rules drop out via `applyRuleQuotas` (shared gate); `rule.limit` / quota never enter the payload (per-rule rate limits are currently INERT — do not promise them until agent-side enforcement returns).
 - TLS link: only the `tls` out transport (`TLS_LINK_TRANSPORTS = {tls}`); legacy grpc/wss/mtls rows degrade to plaintext. Missing `tls_material` degrades BOTH legs to plaintext. The exit serves the platform server cert; the entry dials with SNI = disguise domain, `insecure` (no server verification — accepted).
-- Config payload: `{ agent: "realm", node: {id, name}, services: [...], tls_material? }` — PEMs ride inside `tls_material` (0600 cache on the agent). The flavor guard on both server (renderer emits `agent: "realm"`) and agent (non-realm payloads refused) keeps a stale gost-era snapshot from ever being applied.
+- Config payload: `{ node: {id, name}, services: [...], tls_material? }` — PEMs ride inside `tls_material` (0600 cache on the agent). There is deliberately NO version/flavor discriminator in the payload: the cutover is total (decision D3/Q5) and legacy gost payloads receive no compatibility path — a stale gost-era `node_configs` row must be recomputed away (any recompute trigger), which is why the daily cron's full sweep stays.
 
 ### Apply semantics and connection disposition (Supervisor)
 

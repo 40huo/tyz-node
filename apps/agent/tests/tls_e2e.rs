@@ -105,7 +105,6 @@ async fn tls_link_entry_to_exit() {
         let stats = tyz_agent::stats::StatsRegistry::new();
         let supervisor: SharedSupervisor = Arc::new(AsyncMutex::new(Supervisor::new(stats.clone())));
         let config = RealmNodeConfig {
-            agent: "realm".into(),
             node: NodeInfo { id: 1, name: "n".into() },
             services,
             tls_material: tls,

@@ -40,28 +40,27 @@ pub async fn run(cfg: agentcfg::AgentConfig) {
     // cache is skipped — fresh start.
     let mut baseline_version: i64 = 0;
     if let Some(cached) = store::load() {
-        if cached.config.agent == "realm" {
-            if let Some(material) = &cached.config.tls_material {
-                let _ = certs::ensure(material);
-            }
-            let mut sv = supervisor.lock().await;
-            match sv.apply_config(&cached.config, false).await {
-                Ok(outcome) => {
-                    for (name, err) in &outcome.failures {
-                        tracing::warn!(service = name, "offline bootstrap partial apply: {err}");
-                    }
-                    tracing::info!(
-                        version = cached.version,
-                        services = sv.service_count(),
-                        "offline bootstrap applied from cache"
-                    );
-                }
-                Err(err) => tracing::warn!("offline bootstrap rejected: {err}"),
-            }
-            baseline_version = cached.version;
-        } else {
-            tracing::warn!("cached config is not realm-flavored; starting from scratch");
+        // A pre-realm (gost-era) cache decodes into an empty service set, so
+        // applying it is equivalent to starting from scratch — either way
+        // nothing serves until the first successful fetch.
+        if let Some(material) = &cached.config.tls_material {
+            let _ = certs::ensure(material);
         }
+        let mut sv = supervisor.lock().await;
+        match sv.apply_config(&cached.config, false).await {
+            Ok(outcome) => {
+                for (name, err) in &outcome.failures {
+                    tracing::warn!(service = name, "offline bootstrap partial apply: {err}");
+                }
+                tracing::info!(
+                    version = cached.version,
+                    services = sv.service_count(),
+                    "offline bootstrap applied from cache"
+                );
+            }
+            Err(err) => tracing::warn!("offline bootstrap rejected: {err}"),
+        }
+        baseline_version = cached.version;
     }
 
     // WS push channel → control-loop wakeups.

@@ -354,7 +354,7 @@ export async function buildRealmNodeConfig(db: Database, nodeId: number): Promis
     seen.add(key);
   }
 
-  const config: RealmNodeConfig = { agent: "realm", node: { id: node.id, name: node.name }, services };
+  const config: RealmNodeConfig = { node: { id: node.id, name: node.name }, services };
   if (tlsWanted) {
     try {
       config.tls_material = await ensureTlsMaterial(db);
