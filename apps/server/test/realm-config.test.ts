@@ -267,6 +267,47 @@ describe("buildRealmNodeConfig", () => {
     expect(serviceOf(entry!, "service-206")).toBeUndefined();
   });
 
+  test("rule.limit renders into the payload subset; request/ips dropped", async () => {
+    const db = makeDb();
+    await seedBase(db);
+    await seedTwoNodeTunnel(db, { tunnel: 60, inNode: 1, outNode: 2, rule: 260 });
+    await db
+      .update(schema.relayRules)
+      .set({
+        limit: {
+          traffic: {
+            service_in: 1_500_000.7,
+            service_out: 800_000.2,
+            conn_in: 100_000,
+            ips: [{ ip: "1.2.3.4", in: 1, out: 1 }],
+          },
+          request: { service_rate: 50 },
+          connection: { service_limit: 120.9 },
+        },
+      })
+      .where(eq(schema.relayRules.id, 260));
+
+    for (const nodeId of [1, 2]) {
+      const config = await buildRealmNodeConfig(db, nodeId);
+      const svc = serviceOf(config!, "service-260");
+      expect(svc?.limit).toEqual({
+        service_in: 1_500_000, // floored ints; ips/request variants dropped
+        service_out: 800_000,
+        conn_in: 100_000,
+        max_conns: 120,
+      });
+    }
+  });
+
+  test("no limit → no limit key in the payload", async () => {
+    const db = makeDb();
+    await seedBase(db);
+    await seedTwoNodeTunnel(db, { tunnel: 61, inNode: 1, outNode: 2, rule: 261 });
+
+    const config = await buildRealmNodeConfig(db, 1);
+    expect(serviceOf(config!, "service-261")?.limit).toBeUndefined();
+  });
+
   test("unparsable targets skip the exit leg; the entry still dials the exit", async () => {
     const db = makeDb();
     await seedBase(db);

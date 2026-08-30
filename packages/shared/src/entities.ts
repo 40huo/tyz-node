@@ -217,10 +217,11 @@ export interface UserSubscription {
   updated_at: string;
 }
 
-// Limiter configuration types
+// Limiter configuration types. NOTE: `limit` is a schemaless JSON TEXT column
+// — narrowing this type needs NO database migration; rows carrying removed
+// variants simply keep inert JSON that the renderer drops and the form hides.
 export interface LimiterConfig {
   traffic?: TrafficLimiter;
-  request?: RequestLimiter;
   connection?: ConnectionLimiter;
 }
 
@@ -233,14 +234,6 @@ export interface TrafficLimiter {
     ip: string;
     in: number; // Incoming traffic limit for this IP (bytes/s)
     out: number; // Outgoing traffic limit for this IP (bytes/s)
-  }>;
-}
-
-export interface RequestLimiter {
-  service_rate?: number; // Service-level request rate limit (req/s)
-  ips?: Array<{
-    ip: string;
-    rate: number; // Request rate limit for this IP (req/s)
   }>;
 }
 
@@ -318,9 +311,21 @@ export interface RealmService {
   /** Offered ALPN on the TLS client leg (kaminari option); unset = none. */
   alpn?: string[];
   connect_timeout_s?: number; // default 5 (realm's network.tcp_timeout)
+  limit?: RealmServiceLimit;
 }
 
 /** Config payload consumed by the Rust realm agent (GET /api/agent/config). */
+/** Per-service enforcement limits rendered from the rule's `limit` JSON.
+ * `request.*` (HTTP-level) and the per-IP variants are not expressible on the
+ * raw TCP relay and are deliberately dropped by the renderer. */
+export interface RealmServiceLimit {
+  service_in?: number; // Service-level inbound rate cap (bytes/s)
+  service_out?: number; // Service-level outbound rate cap (bytes/s)
+  conn_in?: number; // Per-connection inbound rate cap (bytes/s)
+  conn_out?: number; // Per-connection outbound rate cap (bytes/s)
+  max_conns?: number; // Concurrent connection cap per service
+}
+
 export interface RealmNodeConfig {
   node: { id: number; name: string };
   services: RealmService[];

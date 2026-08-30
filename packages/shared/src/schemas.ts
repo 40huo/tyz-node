@@ -21,17 +21,6 @@ export const trafficLimiterSchema = z.object({
   ips: z.array(ipTrafficLimitSchema).optional(),
 });
 
-export const requestLimiterSchema = z.object({
-  service_rate: z.number().nonnegative().optional(),
-  ips: z
-    .object({
-      ip: z.string(),
-      rate: z.number().nonnegative(),
-    })
-    .array()
-    .optional(),
-});
-
 export const connectionLimiterSchema = z.object({
   service_limit: z.number().int().nonnegative().optional(),
   ips: z
@@ -46,7 +35,6 @@ export const connectionLimiterSchema = z.object({
 export const limiterConfigSchema = z
   .object({
     traffic: trafficLimiterSchema.optional(),
-    request: requestLimiterSchema.optional(),
     connection: connectionLimiterSchema.optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: "limit must not be empty" });
@@ -83,6 +71,15 @@ export const realmServiceSchema = z.object({
   tls_side: z.enum(["listen", "connect"]).optional(),
   alpn: z.array(z.string()).optional(),
   connect_timeout_s: z.number().int().positive().optional(),
+  limit: z
+    .object({
+      service_in: z.number().int().positive().optional(),
+      service_out: z.number().int().positive().optional(),
+      conn_in: z.number().int().positive().optional(),
+      conn_out: z.number().int().positive().optional(),
+      max_conns: z.number().int().positive().optional(),
+    })
+    .optional(),
 });
 
 export const realmNodeConfigSchema = z.object({

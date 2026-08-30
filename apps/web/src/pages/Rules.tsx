@@ -8,7 +8,7 @@ import {
   type EndpointWithMeta,
   endpointAddress,
   ForwardMode,
-  limiterConfigSchema,
+  type LimiterConfig,
   type RelayRule,
   RelayRuleStatus,
   type Tunnel,
@@ -46,18 +46,21 @@ import {
   useFormValues,
 } from "../ui";
 
-function validateLimitText(value: string): string | undefined {
-  const text = value.trim();
-  if (!text) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return "不是合法的 JSON";
-  }
-  const result = limiterConfigSchema.safeParse(parsed);
-  if (!result.success) return `限速配置无效: ${result.error.issues[0]?.message ?? ""}`;
-  return undefined;
+/** 带宽单位固定 Mbps（与云厂商一致）；载荷与账本按字节/秒存储，换算集中在这一对函数。
+ * 1 Mbps = 1,000,000 bit/s ÷ 8 = 125,000 B/s。 */
+const MBPS_TO_BYTES = 125_000;
+
+function mbpsToBytes(mbps: number): number {
+  return Math.round(mbps * MBPS_TO_BYTES);
+}
+
+function bytesToMbps(bytes: number): number {
+  return Number((bytes / MBPS_TO_BYTES).toFixed(2));
+}
+
+/** undefined（未配置）原样透传为 null（不限）。 */
+function bytesToMbpsOpt(bytes: number | undefined): number | null {
+  return bytes === undefined ? null : bytesToMbps(bytes);
 }
 
 // ---- Rule form ----
@@ -73,7 +76,11 @@ interface RuleFormValues {
   tunnel_id: string | null;
   user_id: string | null;
   exit_port: number;
-  limitText: string;
+  lim_service_in: number | null;
+  lim_service_out: number | null;
+  lim_conn_in: number | null;
+  lim_conn_out: number | null;
+  lim_max_conns: number | null;
 }
 
 function ruleFormValues(rule: RelayRule | null): RuleFormValues {
@@ -87,7 +94,11 @@ function ruleFormValues(rule: RelayRule | null): RuleFormValues {
         user_id: rule.user_id === undefined ? null : String(rule.user_id),
         status: rule.status,
         exit_port: rule.exit_port ?? 0,
-        limitText: rule.limit ? JSON.stringify(rule.limit, null, 2) : "",
+        lim_service_in: bytesToMbpsOpt(rule.limit?.traffic?.service_in),
+        lim_service_out: bytesToMbpsOpt(rule.limit?.traffic?.service_out),
+        lim_conn_in: bytesToMbpsOpt(rule.limit?.traffic?.conn_in),
+        lim_conn_out: bytesToMbpsOpt(rule.limit?.traffic?.conn_out),
+        lim_max_conns: rule.limit?.connection?.service_limit ?? null,
         description: rule.description ?? "",
       }
     : {
@@ -99,7 +110,11 @@ function ruleFormValues(rule: RelayRule | null): RuleFormValues {
         user_id: null,
         status: RelayRuleStatus.CREATED,
         exit_port: 0,
-        limitText: "",
+        lim_service_in: null,
+        lim_service_out: null,
+        lim_conn_in: null,
+        lim_conn_out: null,
+        lim_max_conns: null,
         description: "",
       };
 }
@@ -149,6 +164,24 @@ function RuleDialog({
   );
 }
 
+function buildLimitInput(values: RuleFormValues): CreateRuleInput["limit"] {
+  const rate = (mbps: number | null) => (mbps === null ? undefined : mbpsToBytes(mbps));
+  const traffic: LimiterConfig["traffic"] = {
+    ...(rate(values.lim_service_in) !== undefined && { service_in: rate(values.lim_service_in) }),
+    ...(rate(values.lim_service_out) !== undefined && { service_out: rate(values.lim_service_out) }),
+    ...(rate(values.lim_conn_in) !== undefined && { conn_in: rate(values.lim_conn_in) }),
+    ...(rate(values.lim_conn_out) !== undefined && { conn_out: rate(values.lim_conn_out) }),
+  };
+  const connection: LimiterConfig["connection"] =
+    values.lim_max_conns === null ? undefined : { service_limit: values.lim_max_conns };
+  const hasTraffic = Object.keys(traffic).length > 0;
+  if (!hasTraffic && connection === undefined) return null;
+  return {
+    ...(hasTraffic && { traffic }),
+    ...(connection !== undefined && { connection }),
+  };
+}
+
 function RuleForm({
   rule,
   tunnels,
@@ -178,8 +211,14 @@ function RuleForm({
     if (!values.endpoint_id && !values.targets.trim()) errs.targets = "请输入目标地址";
     if (values.listen_port < 1 || values.listen_port > 65535) errs.listen_port = "端口范围 1-65535";
     if (!values.tunnel_id) errs.tunnel_id = "请选择隧道（单节点直转请先创建仅含入口链路的隧道）";
-    const limitError = validateLimitText(values.limitText);
-    if (limitError) errs.limitText = limitError;
+    for (const key of ["lim_service_in", "lim_service_out", "lim_conn_in", "lim_conn_out"] as const) {
+      const v = values[key];
+      if (v !== null && (!Number.isFinite(v) || v <= 0)) errs[key] = "需为正数（Mbps）";
+    }
+    const maxConns = values.lim_max_conns;
+    if (maxConns !== null && (!Number.isInteger(maxConns) || maxConns <= 0)) {
+      errs.lim_max_conns = "正整数";
+    }
     setErrors(errs);
     if (hasErrors(errs)) return;
 
@@ -196,7 +235,7 @@ function RuleForm({
       tunnel_id: Number(values.tunnel_id ?? 0),
       user_id: values.user_id ? Number(values.user_id) : null,
       exit_port: values.exit_port,
-      limit: values.limitText.trim() === "" ? null : (JSON.parse(values.limitText) as CreateRuleInput["limit"]),
+      limit: buildLimitInput(values),
     });
   };
 
@@ -278,14 +317,54 @@ function RuleForm({
           onChange={(v) => set("exit_port", v ?? 0)}
         />
       ) : null}
-      <TextForm
-        label="限速配置 (JSON)"
-        multiline
-        hint='如 {"traffic":{"service_in":1048576}}；留空不限速'
-        inputProps={{ rows: 4, className: "font-mono text-xs" }}
-        value={values.limitText}
-        onChange={(v) => set("limitText", v)}
-        error={errors.limitText}
+      <div className="grid grid-cols-2 gap-3">
+        <NumberForm
+          label="入口带宽"
+          minValue={0}
+          hint="服务级共享；留空不限速"
+          suffix="Mb/s"
+          placeholder="100"
+          value={values.lim_service_in ?? undefined}
+          onChange={(v) => set("lim_service_in", Number.isFinite(v) ? v : null)}
+          error={errors.lim_service_in}
+        />
+        <NumberForm
+          label="出口带宽"
+          minValue={0}
+          hint="服务级共享；留空不限速"
+          suffix="Mb/s"
+          placeholder="100"
+          value={values.lim_service_out ?? undefined}
+          onChange={(v) => set("lim_service_out", Number.isFinite(v) ? v : null)}
+          error={errors.lim_service_out}
+        />
+        <NumberForm
+          label="单连接入口带宽"
+          minValue={0}
+          placeholder="20"
+          suffix="Mb/s"
+          value={values.lim_conn_in ?? undefined}
+          onChange={(v) => set("lim_conn_in", Number.isFinite(v) ? v : null)}
+          error={errors.lim_conn_in}
+        />
+        <NumberForm
+          label="单连接出口带宽"
+          minValue={0}
+          placeholder="20"
+          suffix="Mb/s"
+          value={values.lim_conn_out ?? undefined}
+          onChange={(v) => set("lim_conn_out", Number.isFinite(v) ? v : null)}
+          error={errors.lim_conn_out}
+        />
+      </div>
+      <NumberForm
+        label="并发连接上限"
+        minValue={0}
+        hint="超出上限的新连接将被节点直接关闭；留空不限"
+        placeholder="如 200"
+        value={values.lim_max_conns ?? undefined}
+        onChange={(v) => set("lim_max_conns", Number.isFinite(v) ? v : null)}
+        error={errors.lim_max_conns}
       />
       <TextForm
         label="描述"

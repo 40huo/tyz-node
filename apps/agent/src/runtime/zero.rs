@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use crate::ratelimit::{Pacer, Waiter};
 use tokio::io::AsyncWrite;
 use tokio::net::TcpStream;
 
@@ -30,21 +31,25 @@ use tokio::net::TcpStream;
 pub type DirectionCounter = Arc<AtomicU64>;
 
 /// Copy `a` ⇄ `b` with per-direction live byte counters. Returns the totals
-/// `(a_to_b, b_to_a)`, mirroring `realm_io::bidi_copy`'s shape.
+/// `(a_to_b, b_to_a)`, mirroring `realm_io::bidi_copy`'s shape. The pacers
+/// (empty = unlimited) meter each direction's write-splices in place — the
+/// bytes stay in the kernel, only their rhythm is throttled.
 pub async fn bidi_copy_counted(
     mut a: TcpStream,
     mut b: TcpStream,
     a_to_b: DirectionCounter,
     b_to_a: DirectionCounter,
+    in_pacer: Pacer,
+    out_pacer: Pacer,
 ) -> io::Result<(u64, u64)> {
     #[cfg(target_os = "linux")]
     {
-        let mut copy = BidiSpliceCopy::new(a_to_b, b_to_a)?;
+        let mut copy = BidiSpliceCopy::new(a_to_b, b_to_a, in_pacer, out_pacer)?;
         std::future::poll_fn(|cx| copy.poll(cx, &mut a, &mut b)).await
     }
     #[cfg(not(target_os = "linux"))]
     {
-        copy_userland_counted(&mut a, &mut b, a_to_b, b_to_a).await
+        copy_userland_counted(&mut a, &mut b, a_to_b, b_to_a, in_pacer, out_pacer).await
     }
 }
 
@@ -58,14 +63,16 @@ pub async fn copy_userland_counted<A, B>(
     b: &mut B,
     a_to_b: DirectionCounter,
     b_to_a: DirectionCounter,
+    in_pacer: Pacer,
+    out_pacer: Pacer,
 ) -> io::Result<(u64, u64)>
 where
     A: tokio::io::AsyncRead + AsyncWrite + Unpin,
     B: tokio::io::AsyncRead + AsyncWrite + Unpin,
 {
     use realm_io::statistic::StatStream;
-    let mut b = StatStream::new(b, crate::stats::TxCounter(a_to_b));
-    let mut a = StatStream::new(a, crate::stats::TxCounter(b_to_a));
+    let mut b = StatStream::new(Paced::new(b, in_pacer), crate::stats::TxCounter(a_to_b));
+    let mut a = StatStream::new(Paced::new(a, out_pacer), crate::stats::TxCounter(b_to_a));
     realm_io::bidi_copy(&mut a, &mut b).await
 }
 
@@ -114,15 +121,19 @@ mod imp {
     /// splice(r, w, MAX) with SPLICE_F_MOVE | SPLICE_F_NONBLOCK — realm_io's
     /// `splice_n` verbatim (safety: len ≤ isize::MAX is enforced by the
     /// kernel's syscall contract).
+    /// splice's documented upper bound on 64-bit (the old call sites passed
+    /// `isize::MAX` verbatim — usize::MAX would be rejected with EINVAL).
+    const SPLICE_MAX: usize = isize::MAX as usize;
+
     #[inline]
-    fn splice_n(r: i32, w: i32) -> isize {
+    fn splice_n(r: i32, w: i32, len: usize) -> isize {
         unsafe {
             libc::splice(
                 r,
                 std::ptr::null_mut::<libc::loff_t>(),
                 w,
                 std::ptr::null_mut::<libc::loff_t>(),
-                isize::MAX as usize,
+                len,
                 libc::SPLICE_F_MOVE | libc::SPLICE_F_NONBLOCK,
             )
         }
@@ -138,10 +149,13 @@ mod imp {
         read_done: bool,
         need_flush: bool,
         counter: DirectionCounter,
+        /// Byte budget for this direction (empty = unlimited).
+        pacer: Pacer,
+        waiter: Waiter,
     }
 
     impl Dir {
-        fn new(counter: DirectionCounter) -> io::Result<Self> {
+        fn new(counter: DirectionCounter, pacer: Pacer) -> io::Result<Self> {
             Ok(Self {
                 pipe: Pipe::new()?,
                 pos: 0,
@@ -150,6 +164,8 @@ mod imp {
                 read_done: false,
                 need_flush: false,
                 counter,
+                pacer,
+                waiter: Waiter::default(),
             })
         }
 
@@ -167,7 +183,7 @@ mod imp {
                     // The raw fd is stable for a stream's lifetime — capture
                     // it now so the syscall closure owns only integers.
                     let rfd = r.as_raw_fd();
-                    let n = match r.poll_read_raw(cx, move || splice_n(rfd, wr)) {
+                    let n = match r.poll_read_raw(cx, move || splice_n(rfd, wr, SPLICE_MAX)) {
                         Poll::Ready(Ok(n)) => n,
                         Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
                         Poll::Pending => {
@@ -189,9 +205,21 @@ mod imp {
                 }
 
                 while self.pos < self.cap {
+                    // Rate pacing: move only what the buckets grant (empty
+                    // pacer = unlimited). A dry bucket parks this direction
+                    // until the refill deadline — ordinary backpressure to
+                    // the poll loop, bytes never enter userspace.
+                    let want = (self.cap - self.pos) as u64;
+                    let grant = if self.pacer.is_empty() { want } else { self.pacer.grant(want) };
+                    if grant == 0 {
+                        let at = self.pacer.ready_at();
+                        std::task::ready!(self.waiter.wait_until(cx, at));
+                        continue;
+                    }
                     let rd = self.pipe.rd;
                     let wfd = w.as_raw_fd();
-                    let i = std::task::ready!(w.poll_write_raw(cx, move || splice_n(rd, wfd)))?;
+                    let i =
+                        std::task::ready!(w.poll_write_raw(cx, move || splice_n(rd, wfd, grant as usize)))?;
                     if i == 0 {
                         return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
                     }
@@ -225,10 +253,15 @@ mod imp {
     use std::pin::Pin;
 
     impl BidiSpliceCopy {
-        pub fn new(a_to_b: DirectionCounter, b_to_a: DirectionCounter) -> io::Result<Self> {
+        pub fn new(
+            a_to_b: DirectionCounter,
+            b_to_a: DirectionCounter,
+            in_pacer: Pacer,
+            out_pacer: Pacer,
+        ) -> io::Result<Self> {
             Ok(Self {
-                a_to_b: Dir::new(a_to_b)?,
-                b_to_a: Dir::new(b_to_a)?,
+                a_to_b: Dir::new(a_to_b, in_pacer)?,
+                b_to_a: Dir::new(b_to_a, out_pacer)?,
                 a_to_b_done: None,
                 b_to_a_done: None,
                 a_shutdown: false,
@@ -301,6 +334,7 @@ pub use imp::BidiSpliceCopy;
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use crate::ratelimit::RateLimiter;
 
     /// Drive traffic through a real socket pair and check: (1) counters equal
     /// the bytes actually transferred, (2) identical totals to realm_io's own
@@ -329,9 +363,16 @@ mod tests {
         let relay = {
             let (up, down) = (up.clone(), down.clone());
             tokio::spawn(async move {
-                bidi_copy_counted(relay_side_client, relay_side_target, up, down)
-                    .await
-                    .unwrap();
+                bidi_copy_counted(
+                    relay_side_client,
+                    relay_side_target,
+                    up,
+                    down,
+                    Pacer::default(),
+                    Pacer::default(),
+                )
+                .await
+                .unwrap();
             })
         };
         let echo_task = tokio::spawn(async move {
@@ -389,6 +430,68 @@ mod tests {
         assert!(a2b as usize <= PAYLOAD.len());
     }
 
+
+    /// Rate-limited copy: 128KB through a 256KB/s bucket must take real time
+    /// (pacing, not a single fast splice) while the payload stays intact.
+    #[tokio::test]
+    async fn rate_limited_copy_paces() {
+        use std::time::{Duration, Instant};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        async fn socket_pair() -> (TcpStream, TcpStream) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let dial = tokio::net::TcpStream::connect(addr);
+            let accept = listener.accept();
+            let (client, (server, _)) = tokio::try_join!(dial, accept).unwrap();
+            (client, server)
+        }
+
+        let (client_a, relay_side_client) = socket_pair().await;
+        let (relay_side_target, echo) = socket_pair().await;
+        let up = Arc::new(AtomicU64::new(0));
+        let down = Arc::new(AtomicU64::new(0));
+        let limiter = RateLimiter::new(256 * 1024);
+        let in_pacer = Pacer::new(vec![limiter.clone()]);
+        let out_pacer = Pacer::new(vec![limiter]);
+        let mut client_a = client_a;
+        let relay = tokio::spawn(async move {
+            bidi_copy_counted(relay_side_client, relay_side_target, up, down, in_pacer, out_pacer)
+                .await
+                .unwrap();
+        });
+        let payload = vec![0xABu8; 128 * 1024];
+        let mut echo = echo;
+        let echo_task = {
+            let payload = payload.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; payload.len()];
+                echo.read_exact(&mut buf).await.unwrap();
+                echo.write_all(&buf).await.unwrap();
+                echo.shutdown().await.unwrap();
+            })
+        };
+
+        // NOTE: the client must NOT shut its write side down early — brutal
+        // shutdown ends the whole copy the moment one direction completes,
+        // which would cut the echo's return traffic mid-flight. The response
+        // therefore flows while the request direction is still open.
+        let start = Instant::now();
+        client_a.write_all(&payload).await.unwrap();
+        let mut back = vec![0u8; payload.len()];
+        client_a.read_exact(&mut back).await.unwrap();
+        let elapsed = start.elapsed();
+        relay.await.unwrap();
+        echo_task.await.unwrap();
+
+        assert_eq!(back, payload, "paced copy must stay lossless");
+        assert!(
+            elapsed >= Duration::from_millis(400),
+            "128KB at 256KB/s took only {elapsed:?} — pacing is not enforced"
+        );
+        assert!(elapsed < Duration::from_secs(10), "pacing stalled: {elapsed:?}");
+    }
+
     /// Brutal shutdown: a peer that reads EOF but never closes its own side
     /// must not pin the copy open (realm's default-build behavior).
     #[tokio::test]
@@ -409,9 +512,16 @@ mod tests {
         let up = Arc::new(AtomicU64::new(0));
         let down = Arc::new(AtomicU64::new(0));
         let relay = tokio::spawn(async move {
-            bidi_copy_counted(relay_side_client, relay_side_target, up, down)
-                .await
-                .unwrap();
+            bidi_copy_counted(
+                relay_side_client,
+                relay_side_target,
+                up,
+                down,
+                Pacer::default(),
+                Pacer::default(),
+            )
+            .await
+            .unwrap();
         });
 
         client.write_all(b"hello").await.unwrap();

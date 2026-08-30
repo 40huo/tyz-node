@@ -44,6 +44,24 @@ pub struct RealmService {
     pub alpn: Vec<String>,
     #[serde(default)]
     pub connect_timeout_s: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<ServiceLimit>,
+}
+
+/// Optional per-service enforcement limits (docs/agent-realm-rust-refactor.md
+/// I12). Rendered from the rule's `limit` JSON; every field is independent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceLimit {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_in: Option<u64>, // bytes/s, shared by every connection
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_out: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conn_in: Option<u64>, // bytes/s, per connection
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conn_out: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_conns: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

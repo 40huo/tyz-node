@@ -1,4 +1,13 @@
-import type { Chain, RealmNodeConfig, RealmService, RealmTarget, RelayNode, RelayRule, Tunnel } from "@tyz/shared";
+import type {
+  Chain,
+  RealmNodeConfig,
+  RealmService,
+  RealmServiceLimit,
+  RealmTarget,
+  RelayNode,
+  RelayRule,
+  Tunnel,
+} from "@tyz/shared";
 import { ChainType, Transport } from "@tyz/shared";
 import { eq, inArray, sql } from "drizzle-orm";
 import { applyRuleQuotas } from "../services/quota";
@@ -184,6 +193,22 @@ export function parseTargetAddress(addr: string): RealmTarget | null {
   return { host, port };
 }
 
+/** Translate the rule's panel-authored `limit` JSON into the payload's
+ * enforceable subset. `request.*` is HTTP-level (meaningless on a raw TCP
+ * relay) and the per-IP variants are not supported — both are dropped. */
+function serviceLimitOf(rule: RelayRule): RealmServiceLimit | undefined {
+  const t = rule.limit?.traffic;
+  const c = rule.limit?.connection;
+  const limit: RealmServiceLimit = {
+    ...(t?.service_in !== undefined && { service_in: Math.floor(t.service_in) }),
+    ...(t?.service_out !== undefined && { service_out: Math.floor(t.service_out) }),
+    ...(t?.conn_in !== undefined && { conn_in: Math.floor(t.conn_in) }),
+    ...(t?.conn_out !== undefined && { conn_out: Math.floor(t.conn_out) }),
+    ...(c?.service_limit !== undefined && { max_conns: Math.floor(c.service_limit) }),
+  };
+  return Object.keys(limit).length > 0 ? limit : undefined;
+}
+
 const REALM_LISTEN_HOST = "0.0.0.0";
 const REALM_CONNECT_TIMEOUT_S = 5;
 
@@ -284,6 +309,8 @@ export async function buildRealmNodeConfig(db: Database, nodeId: number): Promis
           service.tls_side = "connect";
           tlsWanted = true;
         }
+        const limit = serviceLimitOf(rule);
+        if (limit) service.limit = limit;
         if (exits.length === 0) {
           const target = parseTargetAddress(rule.targets);
           if (!target) {
@@ -337,6 +364,8 @@ export async function buildRealmNodeConfig(db: Database, nodeId: number): Promis
         service.tls_side = "listen";
         tlsWanted = true;
       }
+      const limit = serviceLimitOf(rule);
+      if (limit) service.limit = limit;
       services.push(service);
     }
   }

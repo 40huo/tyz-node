@@ -12,6 +12,7 @@ pub mod certs;
 pub mod control;
 pub mod cp;
 pub mod model;
+pub mod ratelimit;
 pub mod runtime;
 pub mod stats;
 pub mod store;

@@ -64,6 +64,10 @@ impl ConnRegistry {
         }
         n
     }
+
+    pub fn count(&self) -> usize {
+        self.conns.lock().unwrap().len()
+    }
 }
 
 pub struct ServiceHandle {
@@ -108,6 +112,7 @@ impl ServiceHandle {
         let cancel = CancellationToken::new();
         let health = Arc::new(ServiceHealth::default());
         let conns = Arc::new(ConnRegistry::default());
+        let max_conns = desired.limit.as_ref().and_then(|l| l.max_conns);
         let task = tokio::spawn(accept_loop(AcceptLoop {
             listener,
             desired: desired.clone(),
@@ -117,6 +122,7 @@ impl ServiceHandle {
             health: health.clone(),
             conns: conns.clone(),
             cancel: cancel.clone(),
+            max_conns,
         }));
 
         tracing::info!(service = desired.raw.name, listen = %addr, "service listening");
@@ -179,6 +185,7 @@ struct AcceptLoop {
     health: Arc<ServiceHealth>,
     conns: Arc<ConnRegistry>,
     cancel: CancellationToken,
+    max_conns: Option<usize>,
 }
 
 async fn accept_loop(al: AcceptLoop) {
@@ -191,6 +198,7 @@ async fn accept_loop(al: AcceptLoop) {
         health,
         conns,
         cancel,
+        max_conns,
     } = al;
     let ctx = Arc::new(ConnContext {
         service: desired.clone(),
@@ -203,6 +211,17 @@ async fn accept_loop(al: AcceptLoop) {
             _ = cancel.cancelled() => return,
             accepted = listener.accept() => match accepted {
                 Ok((sock, peer)) => {
+                    // Per-service connection cap: reject by closing the just
+                    // accepted socket (counted as an error for visibility).
+                    if let Some(max) = max_conns {
+                        if conns.count() >= max {
+                            tracing::debug!(service = name, cap = max, "connection rejected: service cap reached");
+                            for c in stats.on_conn(&name, &peer.ip().to_string()).counters() {
+                                c.total_errs.fetch_add(1, Ordering::Relaxed);
+                            }
+                            continue; // sock drops → closed
+                        }
+                    }
                     let guard = stats.on_conn(&name, &peer.ip().to_string());
                     let ctx = ctx.clone();
                     let acceptor = acceptor.clone();
