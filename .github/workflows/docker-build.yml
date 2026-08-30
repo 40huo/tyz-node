@@ -16,10 +16,26 @@ env:
 
 jobs:
   build:
+    name: build ${{ matrix.platform }}
+    # One native runner per arch: the amd64 job builds linux/amd64, the arm64
+    # job (free ubuntu-24.04-arm runner, public repos only) builds
+    # linux/arm64 — no QEMU anywhere, and an arch failing no longer cancels
+    # the other (fail-fast: false). Each job pushes an untagged image BY
+    # DIGEST; the merge job assembles the multi-arch manifest.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            pair: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            pair: arm64
+    runs-on: ${{ matrix.runner }}
     # Skip on forks: IMAGE_NAME is pinned to this org, and a fork's
     # GITHUB_TOKEN cannot push to it (the run would only fail confusingly).
     if: github.repository_owner == 'laoshan-tech'
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -27,9 +43,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -41,7 +54,73 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      # Version stamped into the embedded agent binary (TYZ_VERSION): the
+      # release tag on releases, "nightly" on master pushes (rolling, no hash).
+      - name: Compute agent version
+        id: agentver
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=nightly" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/agent/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            TYZ_VERSION=${{ steps.agentver.outputs.version }}
+          cache-from: type=gha,scope=build-${{ matrix.pair }}
+          cache-to: type=gha,scope=build-${{ matrix.pair }},mode=max
+          provenance: false
+          sbom: false
+
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: merge multi-arch manifest
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -52,29 +131,13 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
 
-      # Version stamped into the embedded agent binary: the release tag on
-      # releases, "nightly" on master pushes (rolling, no hash).
-      - name: Compute agent version
-        id: agentver
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
-            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=nightly" >> "$GITHUB_OUTPUT"
-          fi
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: apps/agent/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            TYZ_VERSION=${{ steps.agentver.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: false
-          sbom: false
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}"
